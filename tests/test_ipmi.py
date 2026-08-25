@@ -81,6 +81,20 @@ def test_nonzero_exit_code_raises_ipmi_error_with_stderr_snippet() -> None:
     assert PASSWORD not in str(exc_info.value)
 
 
+def test_raw_write_commands_succeed_on_empty_stdout_with_zero_rc() -> None:
+    runner = FakeRunner(ok(""), ok(""), ok(""))
+    client = make_client(runner)
+    client.enable_auto()
+    client.disable_auto()
+    client.set_manual_pct(make_fan_pct(50))
+
+
+def test_raw_write_nonzero_rc_with_empty_stdout_still_raises() -> None:
+    runner = FakeRunner(subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
+    with pytest.raises(IpmiError, match="rc=1"):
+        make_client(runner).disable_auto()
+
+
 def test_commands_emit_exact_argv() -> None:
     prefix = [
         "/usr/bin/ipmitool",

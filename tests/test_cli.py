@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 
 from breezed import cli
 from breezed.cli import AppDeps, ClientFactory, app
+from breezed.config import Settings
 from breezed.ipmi import IpmiError
 from breezed.types import FanPercent, TempC
 
@@ -249,6 +250,48 @@ def test_auto_enables_auto_mode(runner: CliRunner, config_dir: Path, install_cli
     assert result.exit_code == 0
     assert client.commands == ["auto"]
     assert json.loads(result.stdout) == {"event": "mode_change", "to": "auto"}
+
+
+def test_set_honors_config_option(runner: CliRunner, config_dir: Path):
+    write_config(config_dir)
+    alt_path = write_config(config_dir, "alt.toml", VALID_TOML.replace("169.254.0.1", "10.9.9.9"))
+    captured: list[Settings] = []
+    client = FakeClient()
+    original = cli.deps
+    cli.deps = AppDeps(
+        build_client=cast(ClientFactory, lambda settings: (captured.append(settings), client)[1]),
+        sleep_interruptible=FakeWait([]),
+    )
+    try:
+        result = runner.invoke(
+            app, ["set", "40", "--config", str(alt_path)], catch_exceptions=False
+        )
+    finally:
+        cli.deps = original
+    assert result.exit_code == 0
+    assert client.commands == ["manual", "set:40"]
+    assert [settings.host for settings in captured] == ["10.9.9.9"]
+
+
+def test_auto_honors_config_option(runner: CliRunner, config_dir: Path):
+    write_config(config_dir)
+    alt_path = write_config(
+        config_dir, "alt-auto.toml", VALID_TOML.replace("169.254.0.1", "10.9.9.8")
+    )
+    captured: list[Settings] = []
+    client = FakeClient()
+    original = cli.deps
+    cli.deps = AppDeps(
+        build_client=cast(ClientFactory, lambda settings: (captured.append(settings), client)[1]),
+        sleep_interruptible=FakeWait([]),
+    )
+    try:
+        result = runner.invoke(app, ["auto", "--config", str(alt_path)], catch_exceptions=False)
+    finally:
+        cli.deps = original
+    assert result.exit_code == 0
+    assert client.commands == ["auto"]
+    assert [settings.host for settings in captured] == ["10.9.9.8"]
 
 
 def test_status_outputs_documented_json_schema(runner: CliRunner, config_dir: Path, install_client):

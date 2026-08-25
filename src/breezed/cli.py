@@ -150,12 +150,15 @@ def run(
 
 
 @app.command("set")
-def set_speed(pct: Annotated[int, typer.Argument()]) -> None:
+def set_speed(
+    pct: Annotated[int, typer.Argument()],
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
+) -> None:
     if not 1 <= pct <= 100:
         err = ValueError(f"PCT must be in 1..100, got {pct}")
         _fail(err, code=2)
     try:
-        settings = load_settings(Path("breezed.toml"))
+        settings = load_settings(config)
         client = deps.build_client(settings)
         client.disable_auto()
         client.set_manual_pct(make_fan_pct(pct))
@@ -167,9 +170,11 @@ def set_speed(pct: Annotated[int, typer.Argument()]) -> None:
 
 
 @app.command()
-def auto() -> None:
+def auto(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
+) -> None:
     try:
-        settings = load_settings(Path("breezed.toml"))
+        settings = load_settings(config)
         client = deps.build_client(settings)
         client.enable_auto()
     except ConfigError as err:
