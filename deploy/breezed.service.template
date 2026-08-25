@@ -1,0 +1,36 @@
+# Installed by breezed {version} on {installed_at}; re-run `breezed daemon install`
+# to refresh this file.
+[Unit]
+Description=breezed - curve-based iDRAC/IPMI fan controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exec_path} run --config /etc/breezed/breezed.toml --metrics-port 9762
+EnvironmentFile=-/etc/breezed.env
+Restart=always
+RestartSec=5
+
+# Hardening — small network daemon that shells out to ipmitool
+User=breezed
+Group=breezed
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

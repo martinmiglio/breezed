@@ -10,7 +10,7 @@ import json
 import signal
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -20,6 +20,7 @@ import typer
 from breezed.config import ConfigError, Settings, load_settings
 from breezed.controller import Controller, EventSink
 from breezed.curve import interpolate
+from breezed.daemon import DaemonError, DaemonInstaller
 from breezed.ipmi import IpmiClient, IpmiError
 from breezed.logs import LoggingEventSink, setup_logging
 from breezed.metrics import MetricsState, start_metrics_server
@@ -31,13 +32,22 @@ app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 ClientFactory = Callable[[Settings], IpmiClient]
 
 
+def _default_build_installer() -> DaemonInstaller:
+    return DaemonInstaller()
+
+
 @dataclass(frozen=True)
 class AppDeps:
     build_client: ClientFactory
     sleep_interruptible: Callable[[threading.Event, float], bool]
+    build_installer: Callable[[], DaemonInstaller] = _default_build_installer
 
 
-deps = AppDeps(build_client=IpmiClient, sleep_interruptible=threading.Event.wait)
+deps = AppDeps(
+    build_client=IpmiClient,
+    sleep_interruptible=threading.Event.wait,
+    build_installer=_default_build_installer,
+)
 
 __all__ = ["app", "deps"]
 
@@ -254,3 +264,38 @@ def validate(
             "would_auto": target is None,
         }
     print(json.dumps(summary))
+
+
+daemon_app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
+
+
+@daemon_app.command("install")
+def daemon_install(
+    start: Annotated[bool, typer.Option("--start")] = False,
+) -> None:
+    try:
+        report = deps.build_installer().install(start=start)
+    except DaemonError as err:
+        _fail(err, code=1)
+    print(json.dumps(asdict(report)))
+
+
+@daemon_app.command("status")
+def daemon_status() -> None:
+    try:
+        report = deps.build_installer().status()
+    except DaemonError as err:
+        _fail(err, code=1)
+    print(json.dumps(asdict(report)))
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall() -> None:
+    try:
+        removed = deps.build_installer().uninstall()
+    except DaemonError as err:
+        _fail(err, code=1)
+    print(json.dumps({"event": "uninstalled", "unit_removed": removed}))
+
+
+app.add_typer(daemon_app, name="daemon")
