@@ -1,0 +1,112 @@
+"""IPMI adapter over ipmitool — the only module in T1-T7 that touches subprocess.
+
+Structurally satisfies the TempReader and FanCommander ports from breezed.ports
+(never inherits them). Redaction is by construction: the password exists only in
+_run's local argv list; error messages reference the ipmitool subcommand args,
+never the full argv.
+"""
+
+import re
+import subprocess
+from collections.abc import Callable, Sequence
+
+from breezed.config import Settings
+from breezed.types import DomainError, FanPercent, TempC
+
+
+class IpmiError(DomainError):
+    """Messages carry short context plus an optional stderr snippet; never full argv."""
+
+
+Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+_SDR_TEMP_RE = re.compile(r"(?<=0Eh|0Fh).+(\d{2})", re.MULTILINE)
+_FAN_RPM_RE = re.compile(r"(\d+) RPM")
+
+
+def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """subprocess.run with capture_output/text/utf-8/replace, 15s timeout, check=False."""
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+    )
+
+
+def _stderr_snippet(stderr: str) -> str:
+    first_line = stderr.strip().splitlines()[0] if stderr.strip() else ""
+    return first_line[:200]
+
+
+class IpmiClient:
+    """Structurally satisfies TempReader + FanCommander — never inherits them."""
+
+    def __init__(self, settings: Settings, *, runner: Runner | None = None) -> None:
+        self._settings = settings
+        self._runner = runner or _default_runner
+
+    def _run(self, args: Sequence[str]) -> str:
+        argv = [
+            self._settings.ipmitool_path,
+            "-I",
+            "lanplus",
+            "-H",
+            self._settings.host,
+            "-U",
+            self._settings.user,
+            "-P",
+            self._settings.password,
+            *args,
+        ]
+        try:
+            completed = self._runner(argv)
+        except subprocess.TimeoutExpired as exc:
+            msg = f"ipmitool {' '.join(args)} timed out after 15s"
+            raise IpmiError(msg) from exc
+        if completed.returncode != 0:
+            snippet = _stderr_snippet(completed.stderr)
+            if self._settings.password:
+                snippet = snippet.replace(self._settings.password, "[redacted]")
+            msg = f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {snippet}"
+            raise IpmiError(msg)
+        if not completed.stdout.strip():
+            msg = f"ipmitool {' '.join(args)}: empty output"
+            raise IpmiError(msg)
+        return completed.stdout
+
+    def read_max_cpu_temp(self) -> TempC:
+        output = self._run(["sdr", "type", "temperature"])
+        temps = [int(m.group(1)) for m in _SDR_TEMP_RE.finditer(output)]
+        if not temps:
+            msg = "ipmitool sdr type temperature: no 0Eh/0Fh temperature rows found"
+            raise IpmiError(msg)
+        return TempC(max(temps))
+
+    def read_fan_rpms(self) -> list[tuple[str, int]]:
+        output = self._run(["sdr", "type", "fan"])
+        rpms: list[tuple[str, int]] = []
+        for line in output.splitlines():
+            fields = [field.strip() for field in line.split("|")]
+            if len(fields) < 2 or not fields[0]:
+                continue
+            match = _FAN_RPM_RE.fullmatch(fields[-1])
+            if match is None:
+                continue
+            rpms.append((fields[0], int(match.group(1))))
+        return rpms
+
+    def enable_auto(self) -> None:
+        self._run(["raw", "0x30", "0x30", "0x01", "0x01"])
+
+    def disable_auto(self) -> None:
+        self._run(["raw", "0x30", "0x30", "0x01", "0x00"])
+
+    def set_manual_pct(self, pct: FanPercent) -> None:
+        self._run(["raw", "0x30", "0x30", "0x02", "0xff", f"0x{format(pct, '02x')}"])
+
+
+__all__ = ["IpmiError", "Runner", "IpmiClient"]
