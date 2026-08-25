@@ -31,6 +31,9 @@ all stdlib-only and fully unit-tested against SPEC curve test cases 1–8.
   (empty → `ValueError`; non-strictly-ascending `temp_c` → `ValueError`; returns a
   normalized tuple copy); `interpolate(curve: Sequence[CurvePoint], temp_c: TempC) -> int | None`.
 - `tests/test_curve.py` (new) — exactly SPEC cases 1–8, listed below.
+- `tests/test_types.py` (new, implementation-time addition) — covers the AC tests that
+  aren't curve cases: make_fan_pct boundaries, make_positive_int field naming,
+  EventType vocabulary set, OperatingMode lowercase serialization.
 - Do **not** touch `pyproject.toml` — no new dependencies; this layer is stdlib-only
   (`dataclasses`, `enum`, `typing`). If ruff/ty flag anything, fix the code, not the config.
 

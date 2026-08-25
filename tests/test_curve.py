@@ -32,15 +32,20 @@ def test_exactly_on_point_returns_that_points_pct():
 
 
 @pytest.mark.parametrize(
-    ("temp", "expected"),
+    ("curve", "temp", "expected"),
     [
-        pytest.param(TempC(52), 7, id="quarter"),
-        pytest.param(TempC((60 + 68) // 2), round((8 + 12) / 2), id="midpoint"),
+        pytest.param(DEFAULT_CURVE, TempC(52), 7, id="quarter"),
+        pytest.param(DEFAULT_CURVE, TempC((60 + 68) // 2), round((8 + 12) / 2), id="midpoint"),
+        pytest.param(
+            make_curve((0, 7), (10, 8)),
+            TempC(5),
+            round(7.5),
+            id="half_step_rounds_to_even",
+        ),
     ],
 )
-def test_interpolates_linearly(temp: TempC, expected: int):
-    curve = validate_curve(DEFAULT_CURVE)
-    assert interpolate(curve, temp) == expected
+def test_interpolates_linearly(curve: Sequence[CurvePoint], temp: TempC, expected: int):
+    assert interpolate(validate_curve(curve), temp) == expected
 
 
 def test_at_or_above_top_returns_none():
