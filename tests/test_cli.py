@@ -104,16 +104,6 @@ class FakeClient:
         self.commands.append(f"set:{pct}")
 
 
-class FakeWait:
-    def __init__(self, script: list[bool]) -> None:
-        self.script = list(script)
-
-    def __call__(self, _stop_event: threading.Event, _timeout: float) -> bool:
-        if not self.script:
-            return True
-        return self.script.pop(0)
-
-
 def scripted_wait(
     actions: dict[int, Callable[[], None]], script: list[bool]
 ) -> Callable[[threading.Event, float], bool]:
@@ -169,7 +159,7 @@ def install_deps():
 @pytest.fixture
 def install_client(install_deps):
     def install_client_fn(client: FakeClient) -> FakeClient:
-        return install_deps(client, FakeWait([]))
+        return install_deps(client, scripted_wait({}, []))
 
     return install_client_fn
 
@@ -223,6 +213,8 @@ def test_help_lists_all_five_commands(runner: CliRunner):
     for argv in (
         ["--help"],
         ["run", "--help"],
+        ["set", "--help"],
+        ["auto", "--help"],
         ["status", "--help"],
         ["validate", "--help"],
     ):
@@ -269,28 +261,32 @@ def test_auto_enables_auto_mode(runner: CliRunner, config_dir: Path, install_cli
     assert json.loads(result.stdout) == {"event": "mode_change", "to": "auto"}
 
 
-def test_set_honors_config_option(runner: CliRunner, config_dir: Path, install_deps):
-    write_config(config_dir)
-    alt_path = write_config(config_dir, "alt.toml", VALID_TOML.replace("169.254.0.1", "10.9.9.9"))
-    captured: list[Settings] = []
-    client = install_deps(FakeClient(), FakeWait([]), captured_settings=captured)
-    result = runner.invoke(app, ["set", "40", "--config", str(alt_path)], catch_exceptions=False)
-    assert result.exit_code == 0
-    assert client.commands == ["manual", "set:40"]
-    assert [settings.host for settings in captured] == ["10.9.9.9"]
-
-
-def test_auto_honors_config_option(runner: CliRunner, config_dir: Path, install_deps):
+@pytest.mark.parametrize(
+    ("command", "alt_host", "expected_commands"),
+    [
+        ("set", "10.9.9.9", ["manual", "set:40"]),
+        ("auto", "10.9.9.8", ["auto"]),
+    ],
+)
+def test_command_honors_config_option(
+    runner: CliRunner,
+    config_dir: Path,
+    install_deps,
+    command: str,
+    alt_host: str,
+    expected_commands: list[str],
+):
     write_config(config_dir)
     alt_path = write_config(
-        config_dir, "alt-auto.toml", VALID_TOML.replace("169.254.0.1", "10.9.9.8")
+        config_dir, f"alt-{command}.toml", VALID_TOML.replace("169.254.0.1", alt_host)
     )
     captured: list[Settings] = []
-    client = install_deps(FakeClient(), FakeWait([]), captured_settings=captured)
-    result = runner.invoke(app, ["auto", "--config", str(alt_path)], catch_exceptions=False)
+    client = install_deps(FakeClient(), scripted_wait({}, []), captured_settings=captured)
+    args = [command, *(["40"] if command == "set" else []), "--config", str(alt_path)]
+    result = runner.invoke(app, args, catch_exceptions=False)
     assert result.exit_code == 0
-    assert client.commands == ["auto"]
-    assert [settings.host for settings in captured] == ["10.9.9.8"]
+    assert client.commands == expected_commands
+    assert [settings.host for settings in captured] == [alt_host]
 
 
 def test_status_outputs_documented_json_schema(runner: CliRunner, config_dir: Path, install_client):
@@ -342,7 +338,6 @@ def test_status_ipmi_error_exits_1(runner: CliRunner, config_dir: Path, install_
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 1
     assert PASSWORD not in result.output
-    assert PASSWORD not in result.stdout
     assert PASSWORD not in result.stderr
 
 
@@ -413,7 +408,9 @@ def test_run_ticks_controller_and_stops_via_stop_event(
     runner: CliRunner, config_dir: Path, install_deps
 ):
     write_config(config_dir)
-    client = install_deps(FakeClient(temps=[TempC(50), TempC(55)]), FakeWait([False, False]))
+    client = install_deps(
+        FakeClient(temps=[TempC(50), TempC(55)]), scripted_wait({}, [False, False])
+    )
     result = runner.invoke(app, ["run"], catch_exceptions=False)
     assert result.exit_code == 0
     assert client.commands == ["manual", "set:7", "auto"]
@@ -455,7 +452,7 @@ def test_run_ipmi_failures_force_auto_then_shutdown_restores_auto(
     write_config(config_dir)
     client = install_deps(
         FakeClient(raise_on_read=IpmiError("sdr failed")),
-        FakeWait([False, False, False]),
+        scripted_wait({}, [False, False, False]),
     )
     result = runner.invoke(app, ["run"], catch_exceptions=False)
     assert result.exit_code == 0
