@@ -11,12 +11,8 @@ import subprocess
 from collections.abc import Callable, Sequence
 
 from breezed.config import Settings
-from breezed.types import DomainError, FanPercent, TempC
-
-
-class IpmiError(DomainError):
-    """Messages carry short context plus an optional stderr snippet; never full argv."""
-
+from breezed.ports import IpmiError
+from breezed.types import FanPercent, TempC
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
