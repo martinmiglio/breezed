@@ -150,11 +150,20 @@ def test_sink_emits_only_spec_event_names() -> None:
 
 
 def test_setup_logging_idempotent() -> None:
-    setup_logging(False)
-    setup_logging(False)
     logger = logging.getLogger("breezed")
-    assert len(logger.handlers) == 1
-    assert logger.level == logging.INFO
-    setup_logging(True)
-    assert len(logging.getLogger("breezed").handlers) == 1
-    assert logging.getLogger("breezed").level == logging.DEBUG
+    prior_handlers = list(logger.handlers)
+    prior_level = logger.level
+    try:
+        setup_logging(False)
+        setup_logging(False)
+        assert len(logger.handlers) == 1
+        assert logger.level == logging.INFO
+        setup_logging(True)
+        assert len(logging.getLogger("breezed").handlers) == 1
+        assert logging.getLogger("breezed").level == logging.DEBUG
+    finally:
+        for handler in list(logger.handlers):
+            if handler not in prior_handlers:
+                logger.removeHandler(handler)
+                handler.close()
+        logger.setLevel(prior_level)
