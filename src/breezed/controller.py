@@ -13,8 +13,8 @@ from typing import Protocol
 from breezed.config import Settings
 from breezed.curve import validate_curve
 from breezed.policy import CurvePolicy
-from breezed.ports import FanCommander, SpeedPolicy, TempReader
-from breezed.types import DomainError, EventType, FanPercent, make_fan_pct
+from breezed.ports import FanCommander, IpmiError, SpeedPolicy, TempReader
+from breezed.types import EventType, FanPercent, make_fan_pct
 
 
 class ControlState(StrEnum):
@@ -56,7 +56,7 @@ class Controller:
     def tick(self) -> None:
         try:
             temp = self._reader.read_max_cpu_temp()
-        except DomainError as exc:
+        except IpmiError as exc:
             self._failure_streak += 1
             self._sink.emit(EventType.IPMI_ERROR, failures=self._failure_streak, error=str(exc))
             if (
@@ -158,7 +158,7 @@ class Controller:
         old = self._state.value
         try:
             self._commander.enable_auto()
-        except DomainError as exc:
+        except IpmiError as exc:
             self._sink.emit(EventType.IPMI_ERROR, error=str(exc))
             return
         self._state = ControlState.AUTO
