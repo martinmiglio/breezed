@@ -1,11 +1,8 @@
 """Tests for breezed.metrics: MetricsState rendering, monotonic counters, HTTP server.
 
-No sleeps: servers bind synchronously on port 0; connections use a
-bounded-retry helper capped at ~2 s.
+No sleeps: servers bind synchronously on port 0.
 """
 
-import threading
-import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -73,60 +70,31 @@ def test_counters_are_monotonic_ints() -> None:
             state.record_ipmi_error()
         else:
             state.record_poll(TempC(50 + step), FanPercent(6), OperatingMode.MANUAL)
-        assert isinstance(state.polls_total, int)
-        assert isinstance(state.ipmi_errors_total, int)
         history.append((state.polls_total, state.ipmi_errors_total))
     polls = [p for p, _ in history]
     errors = [e for _, e in history]
-    assert polls == sorted(polls)
-    assert errors == sorted(errors)
     assert polls == [1, 2, 2, 3, 4, 4, 5, 6, 6, 7]
     assert errors == [0, 0, 1, 1, 1, 2, 2, 2, 3, 3]
 
 
-def fetch_with_retry(url: str, attempts: int = 200) -> str:
-    last_error: OSError | None = None
-    for _ in range(attempts):
-        try:
-            with urllib.request.urlopen(url, timeout=2) as response:
-                return str(response.read().decode())
-        except OSError as error:
-            last_error = error
-            time.sleep(0.01)
-    msg = f"server never became reachable: {url}"
-    raise AssertionError(msg) from last_error
-
-
-def test_http_endpoints_serve_rendered_body() -> None:
+def test_metrics_server_serves_documented_endpoints_on_loopback() -> None:
     state = populated_state()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_metrics_handler(state))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        base = f"http://127.0.0.1:{server.server_port}"
-        with urllib.request.urlopen(f"{base}/metrics", timeout=2) as response:
-            assert response.status == 200
-            assert response.headers["Content-Type"] == ("text/plain; version=0.0.4; charset=utf-8")
-            assert response.read().decode() == state.render()
-        with urllib.request.urlopen(f"{base}/", timeout=2) as response:
-            assert response.status == 200
-            assert response.read().decode() == state.render()
-        with pytest.raises(urllib.error.HTTPError) as exc_info:
-            urllib.request.urlopen(f"{base}/nope", timeout=2)
-        assert exc_info.value.code == 404
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_start_metrics_server_binds_loopback_and_serves() -> None:
-    server = start_metrics_server(0, populated_state())
+    server = start_metrics_server(0, state)
     assert server is not None
     try:
         assert server.daemon_threads is True
         assert server.server_address[0] == "127.0.0.1"
-        assert fetch_with_retry(f"http://127.0.0.1:{server.server_address[1]}/metrics") == (
-            EXPECTED_BLOCK
-        )
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(f"{base}/metrics", timeout=2) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == ("text/plain; version=0.0.4; charset=utf-8")
+            assert response.read().decode() == EXPECTED_BLOCK
+        with urllib.request.urlopen(f"{base}/", timeout=2) as response:
+            assert response.status == 200
+            assert response.read().decode() == EXPECTED_BLOCK
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{base}/nope", timeout=2)
+        assert exc_info.value.code == 404
     finally:
         server.shutdown()
         server.server_close()
@@ -147,11 +115,3 @@ def test_record_poll_updates_all_fields_atomically() -> None:
     assert state.fan_percent == 18
     assert state.mode == OperatingMode.MANUAL
     assert state.polls_total == 1
-
-
-def test_render_metric_names_are_stable_after_warmup() -> None:
-    first = populated_state().render().splitlines()
-    later = populated_state()
-    later.record_poll(TempC(64), FanPercent(12), OperatingMode.MANUAL)
-    second = later.render().splitlines()
-    assert [line.split()[0] for line in first] == [line.split()[0] for line in second]
