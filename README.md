@@ -18,6 +18,9 @@ uv tool install .
 breezed validate /etc/breezed/breezed.toml --probe   # reads one live temp, touches no fans
 ```
 
+(`/etc/breezed/breezed.toml` is created by `daemon install`; before that,
+validate a local copy of the example.)
+
 ## CLI examples
 
 ```sh
@@ -56,9 +59,9 @@ journalctl -u breezed -f           # watch the first hour
 dedicated `breezed` system user, renders `/etc/systemd/system/breezed.service`
 from a template shipped inside breezed itself, writes an empty skeleton for
 `/etc/breezed.env` (`root:breezed`, mode `0640`) only if absent — it never
-overwrites an existing env file or config — and copies
-`deploy/breezed.toml.example` to `/etc/breezed/breezed.toml` only if that file
-does not exist yet.
+overwrites an existing env file or config — and copies the packaged example
+config (`breezed.toml.example`) to `/etc/breezed/breezed.toml` only if that
+file does not exist yet.
 
 **Upgrading**: after `uv tool upgrade breezed` (or reinstalling from source),
 run `sudo breezed daemon install` again — this re-renders the unit so its

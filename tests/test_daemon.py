@@ -67,13 +67,21 @@ class FakeFileOps:
 
 
 class FakeRunner:
-    def __init__(self, outputs: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        outputs: dict[str, str] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> None:
         self.argvs: list[list[str]] = []
         self.outputs = outputs or {}
+        self.errors = errors or {}
 
     def __call__(self, argv: list[str]) -> str:
         self.argvs.append(argv)
-        return self.outputs.get(" ".join(argv), "")
+        key = " ".join(argv)
+        if key in self.errors:
+            raise DaemonError(self.errors[key])
+        return self.outputs.get(key, "")
 
 
 @pytest.fixture
@@ -104,7 +112,7 @@ def make_installer(
 
 
 @pytest.fixture
-def runner():
+def cli_runner():
     return CliRunner()
 
 
@@ -219,6 +227,17 @@ def test_status_absent_unit_reports_all_clear(paths: InstallerPaths):
     )
 
 
+def test_status_probe_failure_reports_inactive(paths: InstallerPaths):
+    fs = FakeFileOps({str(paths.unit_path): STAMPED_UNIT})
+    runner = FakeRunner(errors={"systemctl is-active breezed": "systemctl is-active failed"})
+
+    installer = make_installer(paths, fs, runner)
+
+    status = installer.status()
+    assert status.unit_present is True
+    assert status.active is False
+
+
 def test_uninstall_disables_removes_unit_and_reloads_but_keeps_user_env_config(
     paths: InstallerPaths,
 ):
@@ -299,16 +318,16 @@ def install_installer():
     cli.deps = original
 
 
-def test_help_lists_daemon_subcommands(runner: CliRunner):
-    result = runner.invoke(app, ["daemon", "--help"], catch_exceptions=False)
+def test_help_lists_daemon_subcommands(cli_runner: CliRunner):
+    result = cli_runner.invoke(app, ["daemon", "--help"], catch_exceptions=False)
     assert result.exit_code == 0
     for name in ("install", "status", "uninstall"):
         assert name in result.output
 
 
-def test_daemon_install_prints_report_json_exit_0(runner: CliRunner, install_installer):
+def test_daemon_install_prints_report_json_exit_0(cli_runner: CliRunner, install_installer):
     installer = install_installer(FakeInstaller())
-    result = runner.invoke(app, ["daemon", "install", "--start"], catch_exceptions=False)
+    result = cli_runner.invoke(app, ["daemon", "install", "--start"], catch_exceptions=False)
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert set(payload) == {"created", "skipped", "unit_version", "started"}
@@ -318,21 +337,21 @@ def test_daemon_install_prints_report_json_exit_0(runner: CliRunner, install_ins
     assert installer.start_arg is True
 
 
-def test_daemon_install_daemon_error_exits_1_on_stderr(runner: CliRunner, install_installer):
+def test_daemon_install_daemon_error_exits_1_on_stderr(cli_runner: CliRunner, install_installer):
     install_installer(
         FakeInstaller(error=DaemonError("must run as root; run: sudo breezed daemon install"))
     )
-    result = runner.invoke(app, ["daemon", "install"])
+    result = cli_runner.invoke(app, ["daemon", "install"])
     assert result.exit_code == 1
     assert "sudo breezed daemon install" in result.stderr
     assert result.stdout.strip() == ""
 
 
-def test_daemon_status_prints_report_json_exit_0(runner: CliRunner, install_installer):
+def test_daemon_status_prints_report_json_exit_0(cli_runner: CliRunner, install_installer):
     install_installer(
         FakeInstaller(status_report=DaemonStatus(True, False, True, "0.1.0", "0.2.0"))
     )
-    result = runner.invoke(app, ["daemon", "status"], catch_exceptions=False)
+    result = cli_runner.invoke(app, ["daemon", "status"], catch_exceptions=False)
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload == {
@@ -344,8 +363,8 @@ def test_daemon_status_prints_report_json_exit_0(runner: CliRunner, install_inst
     }
 
 
-def test_daemon_uninstall_prints_json_exit_0(runner: CliRunner, install_installer):
+def test_daemon_uninstall_prints_json_exit_0(cli_runner: CliRunner, install_installer):
     install_installer(FakeInstaller(removed=True))
-    result = runner.invoke(app, ["daemon", "uninstall"], catch_exceptions=False)
+    result = cli_runner.invoke(app, ["daemon", "uninstall"], catch_exceptions=False)
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"event": "uninstalled", "unit_removed": True}
