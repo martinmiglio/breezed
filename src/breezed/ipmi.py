@@ -16,19 +16,34 @@ from breezed.types import FanPercent, TempC
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
-_SDR_TEMP_RE = re.compile(r"(?<=0Eh|0Fh).+(\d{2})", re.MULTILINE)
+_TIMEOUT_S = 15
+
+# The SDR text table reports temperature sensors by hex address; only 0Eh/0Fh
+# rows are CPU-relevant. Anchored per-line so the capture grabs the full 1-3
+# digit temp instead of a greedy two-digit tail (108 -> "08").
+_SDR_TEMP_RE = re.compile(
+    r"^\s*.+?\|\s*0[EF]h\s*\|.*\|\s*(\d{1,3}) degrees C\s*$",
+    re.MULTILINE,
+)
 _FAN_RPM_RE = re.compile(r"(\d+) RPM")
+
+# Raw Dell iDRAC OEM IPMI byte sequences: netfn 0x30/0x30 toggles dynamic fan
+# control (0x01 auto on/off) or sets a manual PWM duty cycle (0x02 + full-byte
+# selector). ipmitool treats these as opaque bytes; they must stay byte-exact.
+_ENABLE_AUTO_CMD = ["raw", "0x30", "0x30", "0x01", "0x01"]
+_DISABLE_AUTO_CMD = ["raw", "0x30", "0x30", "0x01", "0x00"]
+_MANUAL_PCT_CMD_PREFIX = ["raw", "0x30", "0x30", "0x02", "0xff"]
 
 
 def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    """subprocess.run with capture_output/text/utf-8/replace, 15s timeout, check=False."""
+    """subprocess.run with capture_output/text/utf-8/replace, timeout, check=False."""
     return subprocess.run(
         args,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=15,
+        timeout=_TIMEOUT_S,
         check=False,
     )
 
@@ -61,12 +76,13 @@ class IpmiClient:
         try:
             completed = self._runner(argv)
         except subprocess.TimeoutExpired as exc:
-            msg = f"ipmitool {' '.join(args)} timed out after 15s"
+            msg = f"ipmitool {' '.join(args)} timed out after {_TIMEOUT_S}s"
             raise IpmiError(msg) from exc
         if completed.returncode != 0:
-            snippet = _stderr_snippet(completed.stderr)
+            stderr = completed.stderr
             if self._settings.password:
-                snippet = snippet.replace(self._settings.password, "[redacted]")
+                stderr = stderr.replace(self._settings.password, "[redacted]")
+            snippet = _stderr_snippet(stderr)
             msg = f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {snippet}"
             raise IpmiError(msg)
         if not completed.stdout.strip():
@@ -96,13 +112,13 @@ class IpmiClient:
         return rpms
 
     def enable_auto(self) -> None:
-        self._run(["raw", "0x30", "0x30", "0x01", "0x01"])
+        self._run(_ENABLE_AUTO_CMD)
 
     def disable_auto(self) -> None:
-        self._run(["raw", "0x30", "0x30", "0x01", "0x00"])
+        self._run(_DISABLE_AUTO_CMD)
 
     def set_manual_pct(self, pct: FanPercent) -> None:
-        self._run(["raw", "0x30", "0x30", "0x02", "0xff", f"0x{format(pct, '02x')}"])
+        self._run([*_MANUAL_PCT_CMD_PREFIX, f"0x{format(pct, '02x')}"])
 
 
 __all__ = ["IpmiError", "Runner", "IpmiClient"]
