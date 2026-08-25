@@ -20,12 +20,28 @@ controller cases 1–12 with a fake client and fake clock.
 
 ## Files
 
-- `src/breezed/controller.py` (new) — everything in this ticket: `ControlState`
-  StrEnum, `EventSink` Protocol, `Controller`. Imports from `breezed.types`
-  (`TempC`, `FanPercent`, `make_fan_pct`, `OperatingMode`), `breezed.curve`
-  (`CurvePoint`, `interpolate`, `validate_curve`), `breezed.config` (`Settings`),
-  and `breezed.ipmi` (`TempReader`, `FanCommander`). Stdlib-only beyond that
-  (`time`, `typing`) — **no** `subprocess`, **no** third-party imports.
+- `src/breezed/policy.py` (new) — feedback-driven seam for future control loops
+  (linear/two-step/PID): `CurvePolicy` implementing the `SpeedPolicy` Protocol by
+  delegating to `interpolate()`. The `SpeedPolicy` Protocol itself is declared in
+  `breezed.ports` (this ticket appends it there — ports.py owns all Protocols):
+
+  ```python
+  class SpeedPolicy(Protocol):
+      def target_pct(self, temp_c: TempC, settings: Settings) -> int | None: ...
+  ```
+
+  Stateless w.r.t. config on purpose: the controller passes the *current* Settings
+  each call, so hot-reload flows through without policies needing refresh hooks;
+  stateful strategies (PID integrators) own their internal state on `self`.
+  A `FakePolicy` returning fixed values drives the controller tests' policy-injection
+  coverage.
+- `src/breezed/controller.py` (new) — everything else in this ticket: `ControlState`
+   StrEnum, `EventSink` Protocol, `Controller`. Imports from `breezed.types`
+   (`TempC`, `FanPercent`, `make_fan_pct`, `OperatingMode`), `breezed.curve`
+   (`CurvePoint`, `validate_curve`), `breezed.config` (`Settings`),
+   `breezed.ports` (`TempReader`, `FanCommander`, `SpeedPolicy`), and
+   `breezed.policy` (`CurvePolicy`). Stdlib-only beyond that
+   (`time`, `typing`) — **no** `subprocess`, **no** third-party imports.
 - `tests/test_controller.py` (new) — exactly SPEC cases 1–12 below plus the
   hot-reload contract tests, driven by `FakeIpmi` + `FakeClock` defined at the top
   of the file (no fixtures, no monkeypatching).
@@ -72,8 +88,17 @@ controller cases 1–12 with a fake client and fake clock.
        sink: EventSink,
        *,
        clock: Callable[[], float] = time.monotonic,
+       policy: SpeedPolicy | None = None,
    ) -> None: ...
    ```
+
+   `policy` defaults to `CurvePolicy()` — the curve stays the shipped strategy, but
+   the controller never calls `interpolate()` directly (feedback: interchangeable
+   control loops). **Hysteresis stays central in the controller** (agreed decision):
+   the down-step delay is a safety property of the machine, not a property of the
+   speed law — keeping it here means a future PID policy inherits it for free and
+   the safety story cannot drift between strategies. Revisit only if/when a second
+   policy actually lands with conflicting hysteresis needs.
 
    Internal state: `_state: ControlState = UNKNOWN`, `_last_pct: FanPercent | None`,
    `_failure_streak: int = 0`, `_pending_down: tuple[FanPercent, float] | None`
@@ -91,9 +116,10 @@ controller cases 1–12 with a fake client and fake clock.
       guard — see Notes). Return after any failure tick: never touch fans on data
       you don't have.
    2. **Good read.** Reset `_failure_streak = 0`.
-   3. **Interpolate.** `target = interpolate(settings.curve, temp)` where target is
-      `int | None`; convert through `make_fan_pct(target)` only when it is not
-      `None`.
+   3. **Interpolate.** `target = self._policy.target_pct(temp, settings)` where
+       target is `int | None`; convert through `make_fan_pct(target)` only when it
+       is not `None`. (Never import/call `interpolate` here — that would bypass
+       the strategy seam.)
    4. **Target `None` (at/above curve top).** Clear any `_pending_down`. If
       `_state is not AUTO`: `commander.enable_auto()`, `_state = AUTO`, emit
       `mode_change(from=old, to=auto, reason="temp_above_curve", temp_c=T)`. If
@@ -183,14 +209,15 @@ controller cases 1–12 with a fake client and fake clock.
 
 ## Acceptance criteria
 
-- [ ] `src/breezed/controller.py` exports `ControlState`, `EventSink`, `Controller`
-      via `__all__`; imports stdlib (`time`, `typing`) + `breezed.types` /
-      `breezed.curve` / `breezed.config` / `breezed.ipmi` only; never imports
-      `subprocess`, `logging`, or `tomllib`
-- [ ] Constructor takes `reader: TempReader`, `commander: FanCommander` (two params,
-      T4 Protocols reused — no new client Protocol), `settings: Settings`,
-      `sink: EventSink`, keyword-only `clock: Callable[[], float] =
-      time.monotonic`
+- [ ] `src/breezed/ports.py` gains `SpeedPolicy`; `src/breezed/policy.py` exports
+      `CurvePolicy` via `__all__`; controller imports stdlib (`time`, `typing`) +
+      `breezed.types` / `breezed.curve` / `breezed.config` / `breezed.ports` /
+      `breezed.policy` only; never imports `subprocess`, `logging`, or `tomllib`,
+      and never calls `interpolate()` directly
+- [ ] Constructor takes `reader: TempReader`, `commander: FanCommander` (T4 Protocols),
+      `settings: Settings`, `sink: EventSink`, keyword-only
+      `clock: Callable[[], float] = time.monotonic` and
+      `policy: SpeedPolicy | None = None` (default `CurvePolicy()`)
 - [ ] Cold start: zero fan commands until the first successful read (startup
       behavior locked decision)
 - [ ] Failure handling: consecutive `IpmiError`s count toward
@@ -239,7 +266,9 @@ controller cases 1–12 with a fake client and fake clock.
         `test_invalid_hot_reload_keeps_last_good_config_and_logs_config_error`
 - [ ] Companion coverage present: limit-reached-while-AUTO idempotence,
       disable-before-set ordering, successful `replace_settings` picked up next
-      tick, shutdown swallowing `IpmiError`
+      tick, shutdown swallowing `IpmiError`, and a `FakePolicy` injection test
+      proving the controller drives any strategy (fixed-target fake ⇒ expected
+      commands without touching `interpolate`)
 - [ ] All verification commands pass clean:
   - [ ] `uv run pytest tests/test_controller.py -v`
   - [ ] `uv run pytest` (full suite still green alongside T1–T4)
@@ -292,3 +321,4 @@ controller cases 1–12 with a fake client and fake clock.
   `replace_settings()` validation; TOML/mtime failures surface in T7's loop around
   `watcher.reload()` and are logged there. Case 12 exercises the former.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
+

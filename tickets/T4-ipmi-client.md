@@ -2,9 +2,11 @@
 
 ## Goal
 
-Implement the only module allowed to touch `subprocess`: a strongly-typed `IpmiClient`
-per SPEC's strong-typing requirements, split into `TempReader` and `FanCommander`
-`Protocol` capabilities so T5's controller tests inject fakes without monkey-patching.
+Implement the only module allowed to touch `subprocess`: an `IpmiClient` **adapter**
+per SPEC's ports-and-adapters decision. The interfaces it satisfies live in a new
+`src/breezed/ports.py` (`TempReader`, `FanCommander` Protocols) so the dependency
+arrow points at the port — a future Redfish/SSH/BMC client implements the same
+shapes and drops in via constructor injection with zero changes elsewhere.
 It wraps `ipmitool -I lanplus -H {host} -U {user} -P {pass} <args>` with a timeout,
 parses `sdr type temperature` output (locked regex `(?<=0Eh\|0Fh).+(\d{2})`, max CPU
 temp → `TempC`) and `sdr type fan` output (name/rpm pairs for the T7 status command),
@@ -19,11 +21,17 @@ covering SPEC ipmi cases 1–5.
 
 ## Files
 
-- `src/breezed/ipmi.py` (new) — everything in this ticket: `IpmiError`,
-  `TempReader`/`FanCommander` Protocols, `Runner` type alias + default subprocess
+- `src/breezed/ports.py` (new) — the app's interface vocabulary: `TempReader`,
+  `FanCommander` runtime-checkable `Protocol`s (moved *out* of ipmi.py per feedback;
+  adapters depend on ports, never the reverse). Also hosts `SpeedPolicy` if T5's
+  split lands before this ticket — coordinate; default: ports.py owns all Protocols,
+  T5 imports from here rather than defining its own module-local one. Stdlib-only.
+- `src/breezed/ipmi.py` (new) — the adapter: `IpmiError`,
+  `Runner` type alias + default subprocess
   runner, `IpmiClient`, SDR parsers. Imports from `breezed.types`
-  (`DomainError`, `TempC`, `FanPercent`) and `breezed.config`
-  (`Settings` — read-only, for host/user/password/ipmitool_path). Stdlib-only
+  (`DomainError`, `TempC`, `FanPercent`), `breezed.config`
+  (`Settings` — read-only, for host/user/password/ipmitool_path), and
+  `breezed.ports` (`TempReader`, `FanCommander`). Stdlib-only
   beyond that (`subprocess`, `re`, `typing`); no third-party imports.
 - `tests/test_ipmi.py` (new) — exactly SPEC ipmi cases 1–5 below, behavior-named like
   T2/T3 tests.
@@ -41,7 +49,8 @@ covering SPEC ipmi cases 1–5.
 1. Define `IpmiError(DomainError)` in `ipmi.py`. Every raise goes through it; messages
    carry a short human context plus an optional stderr **snippet**, never full command
    lines or env (see task 6 for the redaction contract).
-2. Define the capability Protocols per SPEC strong typing:
+2. Define the capability Protocols **in `ports.py`** (not ipmi.py — this is the
+   feedback-driven swap point for future BMC clients):
 
    ```python
    class TempReader(Protocol):
@@ -113,9 +122,12 @@ covering SPEC ipmi cases 1–5.
 
 ## Acceptance criteria
 
-- [ ] `src/breezed/ipmi.py` exports `IpmiError`, `TempReader`, `FanCommander`,
-      `Runner`, `IpmiClient` via `__all__`; imports stdlib + `breezed.types` +
-      `breezed.config.Settings` only
+- [ ] `src/breezed/ports.py` exports `TempReader`, `FanCommander` via `__all__`;
+      `src/breezed/ipmi.py` exports `IpmiError`, `Runner`, `IpmiClient` via
+      `__all__`; ipmi imports stdlib + `breezed.types` + `breezed.config.Settings`
+      + `breezed.ports` only
+- [ ] Dependency direction holds: `ports.py` imports nothing from `breezed.ipmi`
+      (grep-checkable); adapters depend on ports, never the reverse
 - [ ] `TempReader`/`FanCommander` are runtime-checkable-style `Protocol`s as specced;
       `IpmiClient` structurally satisfies both without inheriting them
 - [ ] Subprocess boundary confined to `_default_runner` + `_run`: fixed argv shape
@@ -181,3 +193,4 @@ covering SPEC ipmi cases 1–5.
   accidental f-string of argv would leak it — the case 5 test asserts against a
   deliberately hostile stderr containing the password.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
+

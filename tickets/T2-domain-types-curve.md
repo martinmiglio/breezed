@@ -16,7 +16,14 @@ all stdlib-only and fully unit-tested against SPEC curve test cases 1–8.
 
 - `src/breezed/types.py` (new) — `TempC`, `FanPercent`, `Celsius` NewTypes;
   `make_fan_pct(value: int) -> FanPercent` validated constructor (raises `ValueError`
-  outside 1–100); `OperatingMode(StrEnum)` with members `UNKNOWN`, `AUTO`, `MANUAL`.
+  outside 1–100); `make_positive_int(name: str, value: int) -> int` validated
+  constructor for interval-style settings (raises `ValueError` naming the field when
+  `value <= 0`) so T3's loader holds zero business rules of its own;
+  `OperatingMode(StrEnum)` with members `UNKNOWN`, `AUTO`, `MANUAL`; and
+  `EventType(StrEnum)` — the closed log-event vocabulary (`STARTUP`, `POLL`,
+  `MODE_CHANGE`, `SPEED_CHANGE`, `HYSTERESIS_WAIT`, `CONFIG_RELOAD`,
+  `CONFIG_ERROR`, `IPMI_ERROR`, `SHUTDOWN`; lowercase values matching the SPEC
+  event names) so ty enforces event names at every emit site.
   Also define a shared `DomainError(ValueError)` base here so later tickets
   (`ConfigError` in T3, `IpmiError` in T4) can subclass it.
 - `src/breezed/curve.py` (new) — frozen/slotted `CurvePoint(temp_c: Celsius,
@@ -29,9 +36,16 @@ all stdlib-only and fully unit-tested against SPEC curve test cases 1–8.
 
 ## Tasks
 
-1. Create `src/breezed/types.py`: the three NewTypes, `make_fan_pct()` raising
-   `ValueError` with a message naming the bounds (`fan_pct must be in 1..100, got {value}`),
-   and `OperatingMode` as a `StrEnum`. Keep `__all__` explicit.
+1. Create `src/breezed/types.py`: the three NewTypes, `make_fan_pct()`, and
+   `make_positive_int()` (message pattern: `{name} must be > 0, got {value}`), raising
+   `ValueError` with messages naming the bounds/field. Add `OperatingMode` as a
+   `StrEnum`, plus `EventType(StrEnum)` whose member values are the lowercase SPEC
+   event names — T5 emits these members and T6 derives its test vocabulary from
+   them. Keep `__all__` explicit.
+1a. **Validation-split principle** (feedback-driven): every business rule lives in a
+   domain constructor or validator in this module/curve.py — never inline in an
+   adapter. If a rule can be phrased as "this value must satisfy X", it gets a
+   constructor here. Adapters call constructors; they never re-implement checks.
 2. **Decision — `OperatingMode` lives here, not in T5.** Rationale: SPEC's strong-typing
    section groups all domain wrappers/enums together, it has zero dependencies on
    controller state, and T3/T5/T7 will import it from one canonical place. T5 will add
@@ -67,10 +81,14 @@ all stdlib-only and fully unit-tested against SPEC curve test cases 1–8.
 ## Acceptance criteria
 
 - [ ] `src/breezed/types.py` exports `TempC`, `FanPercent`, `Celsius`,
-      `make_fan_pct`, `OperatingMode` (StrEnum: `unknown`/`auto`/`manual` values)
+      `make_fan_pct`, `make_positive_int`, `OperatingMode`, `EventType`
       via `__all__`; imports nothing beyond stdlib
 - [ ] `make_fan_pct(0)` and `make_fan_pct(101)` raise `ValueError`;
       boundary values `make_fan_pct(1)` / `make_fan_pct(100)` succeed
+- [ ] `make_positive_int("poll_interval_s", 0)` / negative raise `ValueError`
+      naming the field; positive values pass through as `int`
+- [ ] `EventType` members' `.value`s are exactly the nine SPEC event names;
+      add a test asserting the set equals the documented vocabulary
 - [ ] `src/breezed/curve.py` defines frozen+slotted `CurvePoint` and passes
       `validate_curve()` for strictly ascending input; empty curve raises `ValueError`
 - [ ] `interpolate()` returns `int | None`: `None` at-or-above top of curve, clamped

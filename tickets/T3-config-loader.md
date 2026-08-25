@@ -55,15 +55,21 @@ SPEC config cases 1–8.
    - TOML ints arrive already as `int` — validate types defensively anyway (a string
      where an int belongs ⇒ `ConfigError` naming the field), but do not coerce.
    - Env resolution order per field: `IDRAC_*` env var → file value → `ConfigError`.
-     Missing host/user with both unset ⇒ `ConfigError` naming the specific field(s)
-     (SPEC case 2 expects the field named).
-   - Curve handling: absent or empty `[[curve]]` ⇒ `Settings.curve = DEFAULT_CURVE`.
-     Present ⇒ map rows through `make_fan_pct()` / construct `CurvePoint`s and run
-     T2's `validate_curve()`; convert its `ValueError` into `ConfigError` preserving
-     the message (do not duplicate the ascending-check logic).
-   - Interval validation: `poll_interval_s`, `read_failure_limit`,
-     `step_down_hysteresis_s` must all be `> 0`; `metrics_port` when present must be
-     `> 0` (or `None`). Out-of-bounds ⇒ `ConfigError` naming the field (SPEC case 6).
+      Missing host/user with both unset ⇒ `ConfigError` naming the specific field(s)
+      (SPEC case 2 expects the field named).
+    - Curve handling: absent or empty `[[curve]]` ⇒ `Settings.curve = DEFAULT_CURVE`.
+      Present ⇒ map rows through `make_fan_pct()` / construct `CurvePoint`s and run
+      T2's `validate_curve()`; convert its `ValueError` into `ConfigError` preserving
+      the message (do not duplicate the ascending-check logic).
+    - **All business rules delegate to domain constructors** (feedback: adapters
+      validate structure, domain validates rules): `poll_interval_s`,
+      `read_failure_limit`, `step_down_hysteresis_s` go through
+      `make_positive_int(field_name, value)`; `metrics_port` is either `None` or
+      `make_positive_int("metrics_port", value)`. The loader's only job for these
+      fields is catching the resulting `ValueError` and re-raising as `ConfigError`
+      with the field name — zero arithmetic/comparison logic lives in this module.
+      A non-int where an int belongs (TOML string `"10"`) is a *structural* error:
+      reject here with `ConfigError`, do not pass to domain.
    - Unknown keys anywhere ([settings], top level, curve rows) are ignored silently —
      forward compatibility is a requirement (SPEC case 8), not an error.
    - Return a frozen `Settings`; never mutate anything after construction.
@@ -136,6 +142,10 @@ SPEC config cases 1–8.
 - **Env wins over file** for host/user/password per SPEC's locked secrets decision,
   even when the file has values for all three. Only these three keys read env; intervals
   and paths are file-only (CLI flags will layer on top in T7).
+- **Validation split discipline**: this module contains no `> 0`/range comparisons —
+  grep for `0` comparisons in review; every rule routes through `breezed.types`
+  constructors or `validate_curve`. The only structural checks permitted are:
+  key presence, TOML type shape (int-vs-str), and env/file precedence.
 - **Example config location**: the polished user-facing example lands in `deploy/` with
   T8; this ticket only adds the minimal `tests/fixtures/config_valid.toml`. Don't create
   `deploy/` early.
@@ -147,3 +157,4 @@ SPEC config cases 1–8.
   reloading should bump content/mtime explicitly (`os.utime` with a later timestamp) if
   flaky on the dev machine's fs.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
+

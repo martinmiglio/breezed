@@ -397,3 +397,7 @@ against injected fake clients — no monkeypatching, no real subprocesses, no sl
   tests pin this (a regression that builds a `Controller` in these paths fails
   those tests immediately).
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
+- **`daemon` command group lands in T8** (`daemon install/status/uninstall`
+  mounted onto this same `app`): keep cli.py free of module-level side effects
+  beyond `app` and `deps` so `app.add_typer(...)` can be added later without
+  rework. Do not stub the daemon commands here.

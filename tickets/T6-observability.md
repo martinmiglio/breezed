@@ -48,17 +48,20 @@ format.
 
 ## Tasks
 
-1. In `src/breezed/logs.py`, define the closed vocabulary up front:
+1. In `src/breezed/logs.py`, wire the event vocabulary — **decision (feedback):
+   an enum, not a runtime string set**. `EventType(StrEnum)` is defined in
+   `breezed.types` (T2); ty now rejects unknown event names at every emit site at
+   type-check time, which is stronger than the old frozenset's runtime-only guard
+   that direct logger calls could bypass. Keep a derived constant for tests only:
 
    ```python
-   SPEC_EVENT_NAMES: frozenset[str] = frozenset({
-       "startup", "poll", "mode_change", "speed_change", "hysteresis_wait",
-       "config_reload", "config_error", "ipmi_error", "shutdown",
-   })
+   SPEC_EVENT_NAMES: frozenset[str] = frozenset(
+       e.value for e in EventType
+   )
    ```
 
-   This is the single source of truth both the sink guard and the tests check
-   against. Do not derive it from docstrings or duplicate it in metrics.
+   This is the single source of truth the tests check against; it must never be
+   hand-edited to add names — change `EventType` instead.
 
 2. Implement `JsonLogFormatter(logging.Formatter)`:
 
@@ -98,19 +101,19 @@ format.
    ```python
    class LoggingEventSink:
        def __init__(self, logger: logging.Logger | None = None) -> None: ...
-       def emit(self, event: str, /, **fields: object) -> None: ...
+       def emit(self, event: EventType, /, **fields: object) -> None: ...
    ```
 
-   - Structurally satisfies T5's `EventSink` Protocol (keyword-only positional
-     `event`, arbitrary keyword fields).
-   - Guard clause: if `event not in SPEC_EVENT_NAMES`, raise `ValueError` naming
-     the offender. Fail loud in development rather than silently shipping a typo'd
-     event name into production logs; the runtime cost is one set lookup per
-     emission.
+   - Structurally satisfies T5's `EventSink` Protocol. **T5's Protocol signature
+     must be updated to `emit(self, event: EventType, /, **fields)`** — the enum
+     lives in `breezed.types`, so controller.py imports it from there; the
+     dependency direction (controller → types, logs → types) stays clean.
+   - No runtime guard needed: ty rejects unknown names at call sites; keep a
+     defensive `str(event)` only at serialization time.
    - Emission is a single call:
-     `self._log.info(event, extra={"event": event, **fields})` — the message *is*
-     the event name (so verbose/human mode still shows something meaningful), and
-     the same name rides `extra` for the JSON formatter.
+     `self._log.info(str(event), extra={"event": str(event), **fields})` — the
+     message *is* the event name (so verbose/human mode still shows something
+     meaningful), and the same name rides `extra` for the JSON formatter.
    - Do **not** import `Controller`/`ControlState` here; the adapter knows nothing
      about what emits.
 
@@ -207,13 +210,15 @@ format.
      - `test_verbose_mode_is_not_json` — same emissions through the human
        formatter; assert lines match the `%(asctime)s %(levelname)s %(message)s`
        shape (regex) and that `json.loads` raises on the first line.
-     - `test_sink_rejects_non_spec_event_names` — `pytest.raises(ValueError)` on
-       `emit("polled")` (typo) and on a plausible-sounding invention like
-       `metrics_scrape`.
-     - `test_sink_emits_only_spec_event_names` — drive `LoggingEventSink` across
-       every name in `SPEC_EVENT_NAMES`, collect the resulting records, assert
-       `record.event ∈ SPEC_EVENT_NAMES` for each (the closed-vocabulary
-       guarantee T5's consumers rely on).
+      - `test_sink_rejects_non_spec_event_names` — replaced by type-level
+        enforcement; instead assert the derived vocabulary matches SPEC:
+        `test_event_vocabulary_matches_spec` —
+        `{e.value for e in EventType} ==` the nine documented names (guards
+        accidental drift in T2's enum).
+      - `test_sink_emits_only_spec_event_names` — drive `LoggingEventSink`
+        across every `EventType` member, collect the resulting records, assert
+        `record.event ∈ SPEC_EVENT_NAMES` for each (the closed-vocabulary
+        guarantee T5's consumers rely on).
 
 8. Write `tests/test_metrics.py`:
 
@@ -245,9 +250,13 @@ format.
 
 ## Acceptance criteria
 
-- [ ] `src/breezed/logs.py` exports `SPEC_EVENT_NAMES`, `JsonLogFormatter`,
-      `LoggingEventSink`, `setup_logging` via `__all__`; imports stdlib only
-      (`json`, `logging`, `datetime`); no import from `breezed.controller`
+- [ ] `src/breezed/logs.py` exports `SPEC_EVENT_NAMES` (derived from `EventType`,
+      never hand-maintained), `JsonLogFormatter`,
+      `LoggingEventSink`, `setup_logging` via `__all__`; imports stdlib
+      (`json`, `logging`, `datetime`) + `breezed.types.EventType`; no import from
+      `breezed.controller`
+- [ ] `EventSink` Protocol in T5 and `LoggingEventSink.emit` both take
+      `EventType` — unknown event names are a type-check failure, not a runtime one
 - [ ] `src/breezed/metrics.py` exports `MetricsState` (including `.render()`) and
       `start_metrics_server` via `__all__`; imports stdlib + `breezed.types`
       only; no third-party dependencies added anywhere in this ticket
@@ -273,7 +282,7 @@ format.
   - [ ] `test_json_output_parses_per_line_with_required_keys`
   - [ ] `test_extra_fields_surface_as_top_level_keys`
   - [ ] `test_verbose_mode_is_not_json`
-  - [ ] `test_sink_rejects_non_spec_event_names`
+  - [ ] `test_event_vocabulary_matches_spec`
   - [ ] `test_sink_emits_only_spec_event_names`
 - [ ] `tests/test_metrics.py` includes, at minimum:
   - [ ] `test_render_exact_documented_lines_from_populated_state`
@@ -336,3 +345,5 @@ format.
   in-file at top of the test modules (T5 conventions). The HTTP test uses port 0
   (ephemeral) so parallel pytest runs never race for a fixed port.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
+
+

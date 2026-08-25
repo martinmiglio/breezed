@@ -45,8 +45,16 @@ Most scaffolding already exists (commit `5ef1052 "spec, license, and toolchain s
 5. Create `tests/test_version.py` with one test asserting `breezed.__version__` is a `str`
    (and non-empty). This wires pytest end-to-end.
 6. Run `uv sync` to generate `uv.lock`; confirm lockfile is created and not gitignored.
-7. Run the full verification command list below; fix anything they surface.
-8. Update README "Status" line to note T1 complete once green.
+7. Create `.github/workflows/ci.yml`: on PRs and pushes to main — checkout,
+   `astral-sh/setup-uv`, then run the same gates locally enforced:
+   `uvx pre-commit run --all-files` and `uv run pytest`. One job, no matrix
+   until there's a reason.
+8. Create the private GitHub repo with gh and push:
+   `gh repo create martinmiglio/breezed --private --source . --push`.
+   Confirm `gh auth status` is authenticated as martinmiglio first; if not, stop
+   and surface the error rather than creating under another account.
+9. Run the full verification command list below; fix anything they surface.
+10. Update README "Status" line to note T1 complete once green.
 
 ## Acceptance criteria
 
@@ -54,6 +62,8 @@ Most scaffolding already exists (commit `5ef1052 "spec, license, and toolchain s
 - [ ] `tests/test_version.py` passes and asserts `__version__` is a non-empty string
 - [ ] `uv.lock` generated and committed (not in `.gitignore`)
 - [ ] Pre-commit revs pinned to current releases for ruff-pre-commit and ty-pre-commit
+- [ ] `.github/workflows/ci.yml` runs pre-commit + pytest gates on PRs and pushes to main
+- [ ] Private repo `martinmiglio/breezed` exists and is pushed (gh, authenticated as martinmiglio)
 - [ ] All of the following pass clean:
   - [ ] `uv sync`
   - [ ] `uv run pytest`
@@ -76,3 +86,5 @@ Most scaffolding already exists (commit `5ef1052 "spec, license, and toolchain s
   install/sync time. Don't stub cli.py here.
 - `check-yaml` in pre-commit-hooks will parse `.pre-commit-config.yaml` itself; keep it valid YAML.
 - Keep ruff's rule set as configured (E/W/F/I/UP/B/SIM); expanding it is out of scope for T1.
+
+

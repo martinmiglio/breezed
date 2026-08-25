@@ -7,8 +7,8 @@ Replacement for the C# JDMallen.IPMITempMonitor currently running on mmsrv.
 
 - Multi-point fan **curve** with linear interpolation between points
 - Safe by default: iDRAC AUTO mode remains the fallback at all times
-- Nice CLI + foreground daemon; systemd unit shipped as primary deployment,
-  OCI Containerfile (docker/podman compatible) as secondary
+- Nice CLI + foreground daemon; **systemd is the only deployment path**, installed
+  and upgraded idempotently via `breezed daemon install`
 - Structured output for humans, machines, and agents
 - Prometheus-format metrics socket for netdata scraping later
 - Python 3.13, managed entirely by uv; Astral toolchain (ruff, ty, pre-commit)
@@ -17,7 +17,9 @@ Replacement for the C# JDMallen.IPMITempMonitor currently running on mmsrv.
 
 - Web UI / dashboard (netdata covers this)
 - Multi-host support (one iDRAC per instance)
-- PID control mode (piecewise-linear curves only)
+- PID control mode in v1 — curves only, but the `SpeedPolicy` seam reserves room
+  for linear/two-step/PID strategies later
+- OCI container packaging (systemd only; revisit if ever needed)
 
 ## Locked decisions
 
@@ -37,6 +39,11 @@ Replacement for the C# JDMallen.IPMITempMonitor currently running on mmsrv.
 | Metrics | Opt-in `--metrics-port` (e.g. 9762), binds `127.0.0.1`, Prometheus text format |
 | Graceful shutdown | On SIGTERM/SIGINT restore iDRAC AUTOMATIC before exit (best effort) |
 | Default curve | `(45°C→6%, 60°C→8%, 68°C→12%, 74°C→18%)`, ≥78 → AUTO |
+| Ports & adapters | `ports.py` defines `TempReader`/`FanCommander` Protocols; `ipmi.py` is one swappable adapter; dependency arrows point at ports |
+| Control strategy | Speed decision behind a `SpeedPolicy` Protocol (`target_pct(temp_c, settings)`); `CurvePolicy` ships in v1; hysteresis/safety stay central in the controller |
+| Event vocabulary | `EventType(StrEnum)` in the domain layer — closed set enforced by ty at emit sites; no runtime string guard |
+| Validation split | Adapters (config loader) validate structure only; all business rules live in domain constructors/validators (`make_fan_pct`, `make_positive_int`, `validate_curve`) |
+| Deployment | systemd only: unit file written/refreshed idempotently by `breezed daemon install`; no Docker/Containerfile |
 
 ## CLI shape
 
@@ -46,6 +53,8 @@ breezed set <PCT>                                          # one-shot manual %
 breezed auto                                               # one-shot back to iDRAC control
 breezed status [--config PATH]                             # single snapshot: temps, RPMs, curve target
 breezed validate <PATH> [--probe]                          # check config; --probe reads live temp + shows result
+breezed daemon install [--start]                           # idempotent systemd unit install/upgrade (root)
+breezed daemon status                                      # installed version + unit state
 ```
 
 Exit codes: `0` ok, `1` runtime error, `2` usage/config error.
@@ -87,7 +96,10 @@ fan_pct = 18
 - `OperatingMode` / `ControlState` are `StrEnum`s (`unknown`, `auto`, `manual`) — never string literals
 - Config parsing returns `Settings` or raises `ConfigError` (with field-level messages); no silent defaults for missing required keys
 - Public functions have full annotations; `ty check` passes clean with zero ignores
-- `IpmiClient` is an explicit `Protocol` (`TempReader` / `FanCommander` capabilities) so tests inject fakes without monkey-patching
+- `IpmiClient` is one adapter implementing the `TempReader` / `FanCommander`
+  Protocols declared in `ports.py` (structural typing — adapters never inherit);
+  tests inject fakes without monkey-patching. The speed decision sits behind a
+  `SpeedPolicy` Protocol so alternative control loops can replace the curve
 - No `Any` in src/ except at the single subprocess boundary
 
 ## Metrics (Prometheus text format, port opt-in)
@@ -158,11 +170,11 @@ with canned SDR output fixtures captured from mmsrv.
 
 ## Tickets
 
-1. **T1 — Scaffold & toolchain**: uv project layout, pyproject (ruff/ty config), `.pre-commit-config.yaml` (ruff-check --fix, ruff-format, ty), pytest wired, MIT LICENSE, README skeleton. AC: `uv sync && uv run pytest && uvx ruff check . && uvx ty check && uvx pre-commit run --all-files` all green.
-2. **T2 — Domain types & curve engine**: NewTypes, frozen dataclasses, StrEnum, `interpolate()`, curve validator. AC: curve + type tests pass.
-3. **T3 — Config loader**: TOML → Settings, env override, validation errors, hot-reload helper. AC: config tests pass.
-4. **T4 — IPMI client**: subprocess wrapper, SDR parsing, hex speed command, error type, Protocol interfaces, fixtures from mmsrv. AC: ipmi tests pass against fixtures.
-5. **T5 — Controller loop**: state machine, hysteresis, failure fallback, hot-reload integration, graceful-shutdown AUTO restore. AC: controller tests pass.
-6. **T6 — Observability**: JSON logging + events, verbose formatter, metrics server. AC: log event assertions in controller tests; metrics endpoint renders documented fields.
+1. **T1 — Scaffold & toolchain**: uv project layout, pyproject (ruff/ty config), `.pre-commit-config.yaml` (ruff-check --fix, ruff-format, ty), pytest wired, MIT LICENSE, README skeleton, GitHub Actions CI running pre-commit + pytest gates on PRs, private `martinmiglio/breezed` repo via gh. AC: `uv sync && uv run pytest && uvx ruff check . && uvx ty check && uvx pre-commit run --all-files` all green; CI green on first PR.
+2. **T2 — Domain types & curve engine**: NewTypes, frozen dataclasses, StrEnums (`OperatingMode`, `EventType`), domain constructors (`make_fan_pct`, `make_positive_int`), `DomainError` base, `interpolate()`, curve validator. All business-rule validation lives here. AC: curve + type tests pass.
+3. **T3 — Config loader**: structural TOML → Settings adapter only; delegates every business rule to T2's domain constructors/validators and wraps failures as field-named `ConfigError`; env override; hot-reload helper. AC: config tests pass.
+4. **T4 — IPMI adapter**: `ports.py` Protocols; `ipmi.py` implements them over subprocess ipmitool; SDR parsing, hex speed command, error type, fixtures from mmsrv. Swappable for other BMC clients. AC: ipmi tests pass against fixtures.
+5. **T5 — Controller loop**: state machine with injected `SpeedPolicy` (CurvePolicy default), hysteresis, failure fallback, hot-reload integration, graceful-shutdown AUTO restore. AC: controller tests pass.
+6. **T6 — Observability**: JSON logging + `EventType`-typed events, verbose formatter, metrics server. AC: log event assertions in controller tests; metrics endpoint renders documented fields.
 7. **T7 — CLI**: Typer app with run/set/auto/status/validate (+`--probe`), exit-code contract. AC: `--help` snapshot test; status/validate work against fake client in tests.
-8. **T8 — Deploy & docs**: systemd unit, Containerfile (runtime-agnostic), example config, final README. AC: container builds; unit file lint (`systemd-analyze verify`).
+8. **T8 — Daemon deploy & docs**: `daemon install/status/uninstall` subcommands (idempotent systemd unit management), unit template packaged, README final. No container artifacts. AC: `systemd-analyze verify` passes; daemon install is idempotent end-to-end.
