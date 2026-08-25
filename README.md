@@ -17,7 +17,7 @@ See [SPEC.md](SPEC.md) for full behavior, acceptance criteria, and tickets.
 
 ## Status
 
-T1 scaffold & toolchain complete; T2 domain types & curve engine complete — CI gates (pre-commit, pytest) green.
+T1 scaffold & toolchain complete; T2 domain types & curve engine complete; T3 config loader complete — CI gates (pre-commit, pytest) green.
 
 ## License
 
