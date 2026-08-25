@@ -53,6 +53,58 @@ class Controller:
         self._failure_streak = 0
         self._pending_down: tuple[FanPercent, float] | None = None
 
+    def _force_auto(self, reason: str, **fields: object) -> None:
+        old = self._state.value
+        self._commander.enable_auto()
+        self._state = ControlState.AUTO
+        self._sink.emit(
+            EventType.MODE_CHANGE,
+            **{"from": old},
+            to=ControlState.AUTO.value,
+            reason=reason,
+            **fields,
+        )
+
+    def _enter_manual(self, pct: FanPercent, target: int) -> None:
+        old = self._state.value
+        self._commander.disable_auto()
+        self._commander.set_manual_pct(pct)
+        self._state = ControlState.MANUAL
+        self._last_pct = pct
+        self._pending_down = None
+        self._sink.emit(
+            EventType.MODE_CHANGE,
+            **{"from": old},
+            to=ControlState.MANUAL.value,
+            reason="temp_under_curve",
+        )
+        self._sink.emit(
+            EventType.SPEED_CHANGE,
+            fan_pct=pct,
+            target_pct=target,
+            reason="mode_enter",
+        )
+
+    def _gate_downward(self, target: int, pct: FanPercent) -> None:
+        if self._pending_down is None:
+            self._pending_down = (pct, self._clock())
+            self._sink.emit(
+                EventType.HYSTERESIS_WAIT,
+                target_pct=target,
+                hysteresis_s=self._settings.step_down_hysteresis_s,
+            )
+        elif self._clock() - self._pending_down[1] >= self._settings.step_down_hysteresis_s:
+            applied = self._pending_down[0]
+            self._commander.set_manual_pct(applied)
+            self._last_pct = applied
+            self._pending_down = None
+            self._sink.emit(
+                EventType.SPEED_CHANGE,
+                fan_pct=applied,
+                target_pct=target,
+                reason="hysteresis_elapsed",
+            )
+
     def tick(self) -> None:
         try:
             temp = self._reader.read_max_cpu_temp()
@@ -63,16 +115,7 @@ class Controller:
                 self._failure_streak >= self._settings.read_failure_limit
                 and self._state is not ControlState.AUTO
             ):
-                old = self._state.value
-                self._commander.enable_auto()
-                self._state = ControlState.AUTO
-                self._sink.emit(
-                    EventType.MODE_CHANGE,
-                    **{"from": old},
-                    to=ControlState.AUTO.value,
-                    reason="read_failures",
-                    failures=self._failure_streak,
-                )
+                self._force_auto("read_failures", failures=self._failure_streak)
             return
 
         self._failure_streak = 0
@@ -81,68 +124,29 @@ class Controller:
         if target is None:
             self._pending_down = None
             if self._state is not ControlState.AUTO:
-                old = self._state.value
-                self._commander.enable_auto()
-                self._state = ControlState.AUTO
-                self._sink.emit(
-                    EventType.MODE_CHANGE,
-                    **{"from": old},
-                    to=ControlState.AUTO.value,
-                    reason="temp_above_curve",
-                    temp_c=temp,
-                )
+                self._force_auto("temp_above_curve", temp_c=temp)
         else:
-            pct = make_fan_pct(target)
-            if self._state is not ControlState.MANUAL or self._last_pct is None:
-                old = self._state.value
-                self._commander.disable_auto()
-                self._commander.set_manual_pct(pct)
-                self._state = ControlState.MANUAL
-                self._last_pct = pct
-                self._pending_down = None
-                self._sink.emit(
-                    EventType.MODE_CHANGE,
-                    **{"from": old},
-                    to=ControlState.MANUAL.value,
-                    reason="temp_under_curve",
-                )
-                self._sink.emit(
-                    EventType.SPEED_CHANGE,
-                    fan_pct=pct,
-                    target_pct=target,
-                    reason="mode_enter",
-                )
-            elif target > self._last_pct:
-                self._commander.set_manual_pct(pct)
-                self._last_pct = pct
-                self._pending_down = None
-                self._sink.emit(
-                    EventType.SPEED_CHANGE,
-                    fan_pct=pct,
-                    target_pct=target,
-                    reason="temp_rise",
-                )
-            elif target < self._last_pct:
-                if self._pending_down is None:
-                    self._pending_down = (pct, self._clock())
-                    self._sink.emit(
-                        EventType.HYSTERESIS_WAIT,
-                        target_pct=target,
-                        hysteresis_s=self._settings.step_down_hysteresis_s,
-                    )
-                elif self._clock() - self._pending_down[1] >= self._settings.step_down_hysteresis_s:
-                    applied = self._pending_down[0]
-                    self._commander.set_manual_pct(applied)
-                    self._last_pct = applied
+            try:
+                pct = make_fan_pct(target)
+            except ValueError as exc:
+                self._sink.emit(EventType.CONFIG_ERROR, error=str(exc))
+            else:
+                if self._state is not ControlState.MANUAL or self._last_pct is None:
+                    self._enter_manual(pct, target)
+                elif target > self._last_pct:
+                    self._commander.set_manual_pct(pct)
+                    self._last_pct = pct
                     self._pending_down = None
                     self._sink.emit(
                         EventType.SPEED_CHANGE,
-                        fan_pct=applied,
+                        fan_pct=pct,
                         target_pct=target,
-                        reason="hysteresis_elapsed",
+                        reason="temp_rise",
                     )
-            else:
-                self._pending_down = None
+                elif target < self._last_pct:
+                    self._gate_downward(target, pct)
+                else:
+                    self._pending_down = None
 
         self._sink.emit(
             EventType.POLL,
@@ -153,7 +157,8 @@ class Controller:
         )
 
     def shutdown(self) -> None:
-        if self._state is ControlState.AUTO:
+        """Restore AUTO unless already there or no command was ever issued."""
+        if self._state in (ControlState.AUTO, ControlState.UNKNOWN):
             return
         old = self._state.value
         try:
@@ -170,6 +175,7 @@ class Controller:
         )
 
     def replace_settings(self, new_settings: Settings) -> bool:
+        """Swap in hot-reloaded settings; False (plus CONFIG_ERROR event) on invalid curve."""
         try:
             validate_curve(new_settings.curve)
         except ValueError as exc:

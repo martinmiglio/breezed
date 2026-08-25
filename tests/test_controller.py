@@ -1,17 +1,19 @@
 """SPEC controller cases 1-12 plus companion coverage; fakes only, no sleeps."""
 
+import pytest
+
 from breezed.config import Settings
 from breezed.controller import Controller, ControlState
 from breezed.curve import CurvePoint
 from breezed.ipmi import IpmiError
 from breezed.ports import SpeedPolicy
-from breezed.types import Celsius, EventType, FanPercent, TempC
+from breezed.types import EventType, FanPercent, TempC
 
 DEFAULT_CURVE = (
-    CurvePoint(Celsius(45), FanPercent(6)),
-    CurvePoint(Celsius(60), FanPercent(8)),
-    CurvePoint(Celsius(68), FanPercent(12)),
-    CurvePoint(Celsius(74), FanPercent(18)),
+    CurvePoint(TempC(45), FanPercent(6)),
+    CurvePoint(TempC(60), FanPercent(8)),
+    CurvePoint(TempC(68), FanPercent(12)),
+    CurvePoint(TempC(74), FanPercent(18)),
 )
 
 
@@ -49,6 +51,8 @@ class FakeIpmi:
         self.fail_enable_auto = fail_enable_auto
 
     def read_max_cpu_temp(self) -> TempC:
+        if not self.script:
+            raise AssertionError("FakeIpmi script exhausted")
         item = self.script.pop(0)
         if isinstance(item, IpmiError):
             raise item
@@ -274,8 +278,8 @@ def test_invalid_hot_reload_keeps_last_good_config_and_logs_config_error():
     controller, ipmi, sink = make_controller([TempC(60)])
     bad_settings = make_settings(
         curve=(
-            CurvePoint(Celsius(60), FanPercent(8)),
-            CurvePoint(Celsius(50), FanPercent(6)),
+            CurvePoint(TempC(60), FanPercent(8)),
+            CurvePoint(TempC(50), FanPercent(6)),
         )
     )
     assert controller.replace_settings(bad_settings) is False
@@ -301,12 +305,12 @@ def test_disable_auto_before_set_pct_ordering():
 
 def test_replace_settings_success_uses_new_curve_next_tick():
     controller, ipmi, sink = make_controller(
-        [TempC(46)], settings=make_settings(curve=(CurvePoint(Celsius(40), FanPercent(5)),))
+        [TempC(46)], settings=make_settings(curve=(CurvePoint(TempC(40), FanPercent(5)),))
     )
     new_settings = make_settings(
         curve=(
-            CurvePoint(Celsius(45), FanPercent(6)),
-            CurvePoint(Celsius(47), FanPercent(30)),
+            CurvePoint(TempC(45), FanPercent(6)),
+            CurvePoint(TempC(47), FanPercent(30)),
         )
     )
     assert controller.replace_settings(new_settings) is True
@@ -332,3 +336,64 @@ def test_fake_policy_injection_drives_controller():
     assert ipmi.commands == ["manual", "set:42"]
     controller.tick()
     assert ipmi.commands == ["manual", "set:42"]
+
+
+def test_fake_exhaustion_raises_assertion_error():
+    controller, _ipmi, _sink = make_controller([TempC(40)])
+    controller.tick()
+    with pytest.raises(AssertionError, match="FakeIpmi script exhausted"):
+        controller.tick()
+
+
+def test_poll_event_carries_full_field_set_in_auto():
+    controller, _ipmi, sink = make_controller([TempC(80)])
+    controller.tick()
+    assert sink.events(EventType.POLL) == [
+        {"temp_c": 80, "fan_pct": None, "mode": "auto", "target_pct": None}
+    ]
+
+
+def test_drifted_stored_pct_hysteresis_applies_pending_value_at_expiry():
+    clock = FakeClock()
+    controller, ipmi, sink = make_controller(
+        [TempC(68), TempC(60), TempC(52), TempC(52)], clock=clock
+    )
+    controller.tick()  # 68 -> manual 12
+    controller.tick()  # 60 -> target 8 < 12: pending (8, t0)
+    clock.advance(15)
+    controller.tick()  # mid-window: 52 -> target 7, pending keeps 8
+    assert ipmi.commands == ["manual", "set:12"]
+    clock.advance(20)
+    controller.tick()  # expiry applies the stored 8, not the drifted 7
+    assert ipmi.commands == ["manual", "set:12", "set:8"]
+    assert sink.events(EventType.SPEED_CHANGE)[-1] == {
+        "fan_pct": 8,
+        "target_pct": 7,
+        "reason": "hysteresis_elapsed",
+    }
+
+
+def test_replace_settings_clears_pending_down_step():
+    clock = FakeClock()
+    controller, ipmi, sink = make_controller([TempC(68), TempC(60), TempC(60)], clock=clock)
+    controller.tick()
+    controller.tick()
+    assert len(sink.events(EventType.HYSTERESIS_WAIT)) == 1
+
+    assert controller.replace_settings(make_settings()) is True
+    assert controller._pending_down is None
+
+    clock.advance(100)
+    controller.tick()
+    assert "set:8" not in ipmi.commands
+    assert len(sink.events(EventType.HYSTERESIS_WAIT)) == 2
+
+
+def test_out_of_range_policy_target_emits_config_error_and_skips_command():
+    policy = FakePolicy(101)
+    controller, ipmi, sink = make_controller([TempC(40)], policy=policy)
+    controller.tick()
+    assert ipmi.commands == []
+    assert sink.events(EventType.CONFIG_ERROR) == [{"error": "fan_pct must be in 1..100, got 101"}]
+    assert len(sink.events(EventType.POLL)) == 1
+    assert sink.events(EventType.MODE_CHANGE) == []
