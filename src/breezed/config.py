@@ -7,6 +7,7 @@ presence, TOML type shape, env/file precedence, and error wrapping.
 
 import os
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeIs
@@ -52,6 +53,10 @@ def _is_int(value: object) -> TypeIs[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_str(value: object) -> TypeIs[str]:
+    return isinstance(value, str)
+
+
 def _type_name(value: object) -> str:
     return type(value).__name__
 
@@ -64,34 +69,31 @@ def _require_table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def _require_str(table: dict[str, Any], key: str) -> str | None:
+def _require[T](
+    table: dict[str, Any], key: str, predicate: Callable[[object], TypeIs[T]], expect: str
+) -> T | None:
     if key not in table:
         return None
     value = table[key]
-    if not isinstance(value, str):
-        msg = f"{key}: expected a string, got {_type_name(value)}"
+    if not predicate(value):
+        msg = f"{key}: expected {expect}, got {_type_name(value)}"
         raise ConfigError(msg)
     return value
 
 
-def _require_int(table: dict[str, Any], key: str) -> int | None:
-    if key not in table:
-        return None
-    value = table[key]
-    if not _is_int(value):
-        msg = f"{key}: expected an integer, got {_type_name(value)}"
-        raise ConfigError(msg)
-    return value
-
-
-def _positive_or_default(table: dict[str, Any], key: str, default: int | None) -> int | None:
-    raw = _require_int(table, key)
+def _positive_or_default(table: dict[str, Any], key: str) -> int | None:
+    raw = _require(table, key, _is_int, "an integer")
     if raw is None:
-        return default
+        return None
     try:
         return make_positive_int(key, raw)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
+
+
+def _cannot_read(path: str | Path, exc: OSError) -> ConfigError:
+    msg = f"config: cannot read {path}: {exc}"
+    return ConfigError(msg)
 
 
 def _secret(table: dict[str, Any], key: str, env_key: str) -> str | None:
@@ -99,37 +101,37 @@ def _secret(table: dict[str, Any], key: str, env_key: str) -> str | None:
     env_value = os.environ.get(env_key)
     if env_value:
         return env_value
-    file_value = _require_str(table, key)
+    file_value = _require(table, key, _is_str, "a string")
     if file_value:
         return file_value
     return None
 
 
+_IDENTITY_KEYS = (("host", "IDRAC_HOST"), ("user", "IDRAC_USER"))
+
+
 def _identity(settings_table: dict[str, Any]) -> tuple[str, str]:
-    host = _secret(settings_table, "host", "IDRAC_HOST")
-    user = _secret(settings_table, "user", "IDRAC_USER")
+    fetched = [(name, env, _secret(settings_table, name, env)) for name, env in _IDENTITY_KEYS]
     missing = [
         f"{name}: missing (set [settings].{name} or {env})"
-        for name, value, env in (
-            ("host", host, "IDRAC_HOST"),
-            ("user", user, "IDRAC_USER"),
-        )
+        for name, env, value in fetched
         if value is None
     ]
     if missing:
         raise ConfigError("; ".join(missing))
-    return host or "", user or ""
+    return fetched[0][2] or "", fetched[1][2] or ""
 
 
 def _curve_row(index: int, row: dict[str, Any]) -> CurvePoint:
-    temp_raw = row.get("temp_c")
-    pct_raw = row.get("fan_pct")
-    if not _is_int(temp_raw):
-        msg = f"curve[{index}].temp_c: expected an integer, got {_type_name(temp_raw)}"
-        raise ConfigError(msg)
-    if not _is_int(pct_raw):
-        msg = f"curve[{index}].fan_pct: expected an integer, got {_type_name(pct_raw)}"
-        raise ConfigError(msg)
+    def require(column: str) -> int:
+        value = _require(row, column, _is_int, "an integer")
+        if value is None:
+            msg = f"curve[{index}].{column}: expected an integer, got {_type_name(None)}"
+            raise ConfigError(msg)
+        return value
+
+    temp_raw = require("temp_c")
+    pct_raw = require("fan_pct")
     try:
         fan_pct = make_fan_pct(pct_raw)
     except ValueError as exc:
@@ -167,8 +169,7 @@ def load_settings(path: str | Path) -> Settings:
         msg = f"config: invalid TOML in {path}: {exc}"
         raise ConfigError(msg) from exc
     except OSError as exc:
-        msg = f"config: cannot read {path}: {exc}"
-        raise ConfigError(msg) from exc
+        raise _cannot_read(path, exc) from exc
 
     settings_table = _require_table(data, "settings")
     host, user = _identity(settings_table)
@@ -179,16 +180,16 @@ def load_settings(path: str | Path) -> Settings:
         "password": password,
         "curve": _curve(data),
     }
-    for key, default in (
-        ("poll_interval_s", 10),
-        ("read_failure_limit", 3),
-        ("step_down_hysteresis_s", 30),
-        ("metrics_port", None),
+    for key in (
+        "poll_interval_s",
+        "read_failure_limit",
+        "step_down_hysteresis_s",
+        "metrics_port",
     ):
-        value = _positive_or_default(settings_table, key, default)
+        value = _positive_or_default(settings_table, key)
         if value is not None:
             settings_kwargs[key] = value
-    ipmitool_path = _require_str(settings_table, "ipmitool_path")
+    ipmitool_path = _require(settings_table, "ipmitool_path", _is_str, "a string")
     if ipmitool_path:
         settings_kwargs["ipmitool_path"] = ipmitool_path
     return Settings(**settings_kwargs)
@@ -202,8 +203,7 @@ class ConfigWatcher:
         try:
             self._mtime_ns = self._path.stat().st_mtime_ns
         except OSError as exc:
-            msg = f"config: cannot read {path}: {exc}"
-            raise ConfigError(msg) from exc
+            raise _cannot_read(path, exc) from exc
 
     def changed(self) -> bool:
         try:

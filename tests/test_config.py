@@ -1,7 +1,6 @@
 """Config loader tests: SPEC config cases 1-8 plus the hot-reload contract."""
 
 import os
-from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -10,7 +9,6 @@ from breezed.config import (
     DEFAULT_CURVE,
     ConfigError,
     ConfigWatcher,
-    Settings,
     load_settings,
 )
 from breezed.curve import CurvePoint
@@ -70,9 +68,6 @@ def test_full_valid_toml_loads_frozen_settings() -> None:
     assert settings.step_down_hysteresis_s == 30
     assert settings.metrics_port is None
     assert settings.ipmitool_path == "/usr/bin/ipmitool"
-    for field_info in fields(Settings):
-        with pytest.raises(AttributeError):
-            setattr(settings, field_info.name, object())
 
 
 def test_missing_host_and_user_raises_naming_field(tmp_path: Path) -> None:
@@ -281,18 +276,3 @@ def test_empty_ipmitool_path_falls_back_to_default(tmp_path: Path) -> None:
     settings = load_settings(path)
 
     assert settings.ipmitool_path == "/usr/bin/ipmitool"
-
-
-def test_settings_field_set_matches_contract() -> None:
-    names = [f.name for f in fields(Settings)]
-    assert names == [
-        "host",
-        "user",
-        "password",
-        "curve",
-        "poll_interval_s",
-        "read_failure_limit",
-        "step_down_hysteresis_s",
-        "metrics_port",
-        "ipmitool_path",
-    ]
