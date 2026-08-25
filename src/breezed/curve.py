@@ -50,8 +50,7 @@ def interpolate(curve: Sequence[CurvePoint], temp_c: TempC) -> int | None:
             span = b.temp_c - a.temp_c
             frac = (temp_c - a.temp_c) / span
             return round(a.fan_pct + (b.fan_pct - a.fan_pct) * frac)
-    msg = f"temp_c={temp_c} fell outside all bracketing segments"
-    raise AssertionError(msg)
+    return None
 
 
 __all__ = ["CurvePoint", "interpolate", "validate_curve"]
