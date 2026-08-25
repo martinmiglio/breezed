@@ -14,15 +14,15 @@ from breezed.config import (
     load_settings,
 )
 from breezed.curve import CurvePoint
-from breezed.types import Celsius, FanPercent
+from breezed.types import FanPercent, TempC
 
 FIXTURE = Path(__file__).parent / "fixtures" / "config_valid.toml"
 
 EXPECTED_FIXTURE_CURVE = (
-    CurvePoint(temp_c=Celsius(45), fan_pct=FanPercent(6)),
-    CurvePoint(temp_c=Celsius(60), fan_pct=FanPercent(8)),
-    CurvePoint(temp_c=Celsius(68), fan_pct=FanPercent(12)),
-    CurvePoint(temp_c=Celsius(74), fan_pct=FanPercent(18)),
+    CurvePoint(temp_c=TempC(45), fan_pct=FanPercent(6)),
+    CurvePoint(temp_c=TempC(60), fan_pct=FanPercent(8)),
+    CurvePoint(temp_c=TempC(68), fan_pct=FanPercent(12)),
+    CurvePoint(temp_c=TempC(74), fan_pct=FanPercent(18)),
 )
 
 
@@ -58,7 +58,7 @@ fan_pct = 50
 """
 
 
-def test_full_valid_toml_loads_frozen_settings(tmp_path: Path) -> None:
+def test_full_valid_toml_loads_frozen_settings() -> None:
     settings = load_settings(FIXTURE)
 
     assert settings.host == "169.254.0.1"
@@ -102,7 +102,7 @@ def test_env_overrides_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert settings.password == "envpass"
 
 
-def test_empty_env_values_treated_as_missing(
+def test_empty_env_value_falls_back_to_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     path = write_config(
@@ -116,14 +116,33 @@ def test_empty_env_values_treated_as_missing(
     assert settings.host == "file-host"
     assert settings.password == ""
 
-    monkeypatch.delenv("IDRAC_HOST")
-    monkeypatch.setenv("IDRAC_USER", "")
-    bare_path = write_config(tmp_path / "no_user.toml", '[settings]\nhost = "h"\n')
 
+def test_empty_env_value_with_missing_file_key_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = write_config(tmp_path / "no_user.toml", '[settings]\nhost = "h"\n')
+
+    monkeypatch.setenv("IDRAC_USER", "")
     with pytest.raises(ConfigError) as excinfo:
-        load_settings(bare_path)
+        load_settings(path)
 
     assert "IDRAC_USER" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["poll_interval_s", "read_failure_limit", "step_down_hysteresis_s", "metrics_port"],
+)
+def test_bool_rejected_for_positive_int_fields(tmp_path: Path, field: str) -> None:
+    path = write_config(
+        tmp_path / "bool_trap.toml",
+        f'[settings]\nhost = "h"\nuser = "u"\n{field} = true\n',
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(path)
+
+    assert f"{field}: expected an integer" in str(excinfo.value)
 
 
 def test_non_ascending_curve_rejected(tmp_path: Path) -> None:
@@ -188,7 +207,7 @@ def test_unknown_keys_ignored(tmp_path: Path) -> None:
     settings = load_settings(path)
 
     assert settings.host == "h"
-    assert settings.curve == (CurvePoint(temp_c=Celsius(40), fan_pct=FanPercent(5)),)
+    assert settings.curve == (CurvePoint(temp_c=TempC(40), fan_pct=FanPercent(5)),)
 
 
 def test_invalid_toml_and_missing_file_surface_as_config_error(tmp_path: Path) -> None:
