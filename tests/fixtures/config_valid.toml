@@ -1,0 +1,20 @@
+# Minimal valid config mirroring SPEC's example (polished version lands in deploy/ at T8).
+[settings]
+host = "169.254.0.1"
+user = "root"
+
+[[curve]]
+temp_c = 45
+fan_pct = 6
+
+[[curve]]
+temp_c = 60
+fan_pct = 8
+
+[[curve]]
+temp_c = 68
+fan_pct = 12
+
+[[curve]]
+temp_c = 74
+fan_pct = 18
