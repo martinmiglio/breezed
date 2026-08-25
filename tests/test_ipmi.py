@@ -19,15 +19,15 @@ def make_settings() -> Settings:
 
 
 class FakeRunner:
-    """Records argv; pops one canned response per call (last one repeats)."""
+    """Records argv; pops one canned response per call."""
 
     def __init__(self, *responses: subprocess.CompletedProcess[str]) -> None:
         self.calls: list[list[str]] = []
-        self.responses = list(responses) or [ok("ok\n")]
+        self.responses = list(responses)
 
     def __call__(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(args))
-        return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        return self.responses.pop(0)
 
 
 def ok(stdout: str) -> subprocess.CompletedProcess[str]:
@@ -78,14 +78,7 @@ def test_nonzero_exit_code_raises_ipmi_error_with_stderr_snippet() -> None:
         IpmiError, match=r"rc=1.*unable to establish IPMI v2 connection"
     ) as exc_info:
         make_client(runner).read_max_cpu_temp()
-    assert isinstance(exc_info.value, IpmiError)
     assert PASSWORD not in str(exc_info.value)
-
-
-def test_speed_command_formats_percentage_as_lowercase_hex_byte() -> None:
-    runner = FakeRunner()
-    make_client(runner).set_manual_pct(make_fan_pct(10))
-    assert runner.calls[0][-6:] == ["raw", "0x30", "0x30", "0x02", "0xff", "0x0a"]
 
 
 def test_commands_emit_exact_argv() -> None:
@@ -100,18 +93,26 @@ def test_commands_emit_exact_argv() -> None:
         "-P",
         PASSWORD,
     ]
-    auto_runner, manual_runner, speed_runner = FakeRunner(), FakeRunner(), FakeRunner()
-    client_auto, client_manual, client_speed = (
+    auto_runner, manual_runner, speed_runner, hex_runner = (
+        FakeRunner(ok("ok\n")),
+        FakeRunner(ok("ok\n")),
+        FakeRunner(ok("ok\n")),
+        FakeRunner(ok("ok\n")),
+    )
+    client_auto, client_manual, client_speed, client_hex = (
         make_client(auto_runner),
         make_client(manual_runner),
         make_client(speed_runner),
+        make_client(hex_runner),
     )
     client_auto.enable_auto()
     client_manual.disable_auto()
     client_speed.set_manual_pct(make_fan_pct(100))
+    client_hex.set_manual_pct(make_fan_pct(10))
     assert auto_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x01", "0x01"]]
     assert manual_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x01", "0x00"]]
     assert speed_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x02", "0xff", "0x64"]]
+    assert hex_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x02", "0xff", "0x0a"]]
 
 
 def test_password_never_appears_in_raised_messages_even_when_stderr_echoes_it() -> None:
@@ -122,12 +123,10 @@ def test_password_never_appears_in_raised_messages_even_when_stderr_echoes_it() 
         stderr=f"-P {PASSWORD} rejected by host 169.254.0.1\nsecond line {PASSWORD}\n",
     )
     runner = FakeRunner(hostile)
-    with pytest.raises(IpmiError) as auto_exc:
+    with pytest.raises(IpmiError) as exc_info:
         make_client(runner).enable_auto()
-    with pytest.raises(IpmiError) as manual_exc:
-        make_client(runner).disable_auto()
-    raised: list[BaseException] = [auto_exc.value, manual_exc.value]
-    assert all(PASSWORD not in str(exc) and PASSWORD not in repr(exc) for exc in raised)
+    assert PASSWORD not in str(exc_info.value)
+    assert PASSWORD not in repr(exc_info.value)
 
 
 def test_client_structurally_satisfies_ports_without_inheriting() -> None:

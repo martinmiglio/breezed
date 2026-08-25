@@ -48,11 +48,6 @@ def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _stderr_snippet(stderr: str) -> str:
-    first_line = stderr.strip().splitlines()[0] if stderr.strip() else ""
-    return first_line[:200]
-
-
 class IpmiClient:
     """Structurally satisfies TempReader + FanCommander — never inherits them."""
 
@@ -82,8 +77,10 @@ class IpmiClient:
             stderr = completed.stderr
             if self._settings.password:
                 stderr = stderr.replace(self._settings.password, "[redacted]")
-            snippet = _stderr_snippet(stderr)
-            msg = f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {snippet}"
+            first_line = stderr.strip().splitlines()[0] if stderr.strip() else ""
+            msg = (
+                f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {first_line[:200]}"
+            )
             raise IpmiError(msg)
         if not completed.stdout.strip():
             msg = f"ipmitool {' '.join(args)}: empty output"
@@ -118,7 +115,7 @@ class IpmiClient:
         self._run(_DISABLE_AUTO_CMD)
 
     def set_manual_pct(self, pct: FanPercent) -> None:
-        self._run([*_MANUAL_PCT_CMD_PREFIX, f"0x{format(pct, '02x')}"])
+        self._run([*_MANUAL_PCT_CMD_PREFIX, f"{pct:#04x}"])
 
 
 __all__ = ["IpmiError", "Runner", "IpmiClient"]
