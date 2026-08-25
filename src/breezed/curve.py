@@ -34,6 +34,8 @@ def validate_curve(points: Sequence[CurvePoint]) -> tuple[CurvePoint, ...]:
 def interpolate(curve: Sequence[CurvePoint], temp_c: TempC) -> int | None:
     """At-or-above top point -> None (AUTO signal); below first -> first fan_pct.
 
+    Raises ValueError for an empty curve.
+
     Otherwise linear interpolation between bracketing points, rounded with built-in
     round() (banker's rounding — never int() truncation, which would bias every
     fractional result downward).
@@ -50,7 +52,7 @@ def interpolate(curve: Sequence[CurvePoint], temp_c: TempC) -> int | None:
             span = b.temp_c - a.temp_c
             frac = (temp_c - a.temp_c) / span
             return round(a.fan_pct + (b.fan_pct - a.fan_pct) * frac)
-    return None
+    raise ValueError("curve not strictly ascending")
 
 
 __all__ = ["CurvePoint", "interpolate", "validate_curve"]
