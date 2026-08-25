@@ -21,11 +21,11 @@ covering SPEC ipmi cases 1–5.
 
 ## Files
 
-- `src/breezed/ports.py` (new) — the app's interface vocabulary: `TempReader`,
-  `FanCommander` runtime-checkable `Protocol`s (moved *out* of ipmi.py per feedback;
-  adapters depend on ports, never the reverse). Also hosts `SpeedPolicy` if T5's
-  split lands before this ticket — coordinate; default: ports.py owns all Protocols,
-  T5 imports from here rather than defining its own module-local one. Stdlib-only.
+- `src/breezed/ports.py` (new) — the app's interface vocabulary: `TempReader`
+  and `FanCommander` runtime-checkable `Protocol`s, declared here unconditionally
+  (adapters depend on ports, never the reverse). **T5 will append `SpeedPolicy`
+  to this module in its own ticket** — that is the plan of record, not a
+  coordination hedge; do not create a module-local duplicate. Stdlib-only.
 - `src/breezed/ipmi.py` (new) — the adapter: `IpmiError`,
   `Runner` type alias + default subprocess
   runner, `IpmiClient`, SDR parsers. Imports from `breezed.types`
@@ -182,9 +182,10 @@ covering SPEC ipmi cases 1–5.
 - **Empty output ≠ success**: `ipmitool` can exit 0 with empty stdout on some network
   failures — treat empty stdout as `IpmiError` regardless of rc, or T5's failure
   counter never triggers.
-- **This stays the only module importing `subprocess`** — SPEC's "no `Any` except at
-  the single subprocess boundary" clause lives here. If another module ever needs a
-  process, it comes through this client instead.
+- **This stays the only module importing `subprocess` within T1–T7** — SPEC's
+  "no `Any` except at the subprocess boundary" clause lives here. T8's
+  `DaemonInstaller` is the one sanctioned second site (systemd control is
+  inherently process supervision); no other module may spawn processes.
 - **Max, not first**: the locked curve-driver decision is max CPU temp across all
   matching rows; R720s report two CPU packages. The fixture must contain at least two
   distinct `0Fh` temps so picking the wrong row fails the test.

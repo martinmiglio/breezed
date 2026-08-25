@@ -80,7 +80,7 @@ Most scaffolding already exists (commit `5ef1052 "spec, license, and toolchain s
   tag explicitly — do not use branch or `main`. If `uvx ty check` and the pre-commit hook
   disagree on findings, the versions differ; align the revs.
 - **Commit `uv.lock`** — this is an application, not a library; reproducible envs matter for
-  the systemd/Container deployment in T8.
+  the systemd deployment in T8.
 - The `[project.scripts]` entry point points at `breezed.cli:app` which doesn't exist until
   T7. That's fine: hatchling only fails on import when the script is *invoked*, not at
   install/sync time. Don't stub cli.py here.

@@ -37,7 +37,7 @@ controller cases 1–12 with a fake client and fake clock.
   coverage.
 - `src/breezed/controller.py` (new) — everything else in this ticket: `ControlState`
    StrEnum, `EventSink` Protocol, `Controller`. Imports from `breezed.types`
-   (`TempC`, `FanPercent`, `make_fan_pct`, `OperatingMode`), `breezed.curve`
+   (`TempC`, `FanPercent`, `make_fan_pct`, `OperatingMode`, `EventType`), `breezed.curve`
    (`CurvePoint`, `validate_curve`), `breezed.config` (`Settings`),
    `breezed.ports` (`TempReader`, `FanCommander`, `SpeedPolicy`), and
    `breezed.policy` (`CurvePolicy`). Stdlib-only beyond that
@@ -63,7 +63,7 @@ controller cases 1–12 with a fake client and fake clock.
 
    ```python
    class EventSink(Protocol):
-       def emit(self, event: str, /, **fields: object) -> None: ...
+       def emit(self, event: EventType, /, **fields: object) -> None: ...
    ```
 
    Every observable action goes through `sink.emit(...)` using exactly the SPEC

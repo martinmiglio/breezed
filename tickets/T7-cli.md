@@ -22,9 +22,9 @@ against injected fake clients — no monkeypatching, no real subprocesses, no sl
   point already declared in `pyproject.toml` (`breezed = "breezed.cli:app"`), the
   five commands, the dependency seam (task 2), the run loop (task 4), and the
   exit-code mapping helper (task 3). Imports from `breezed.config`
-  (`ConfigError`, `Settings`, `load_settings`, `ConfigWatcher`), `breezed.ipmi`
-  (`IpmiClient`, `IpmiError`, `TempReader`, `FanCommander`),
-  `breezed.controller` (`Controller`), `breezed.logs`
+   (`ConfigError`, `Settings`, `load_settings`, `ConfigWatcher`), `breezed.ipmi`
+   (`IpmiClient`, `IpmiError`), `breezed.ports` (`TempReader`, `FanCommander`),
+   `breezed.controller` (`Controller`), `breezed.logs`
   (`LoggingEventSink`, `setup_logging`), `breezed.metrics`
   (`MetricsState`, `start_metrics_server`), `breezed.curve` (`interpolate`),
   `breezed.types` (`FanPercent`, `make_fan_pct`). Third-party: `typer` only
@@ -67,23 +67,23 @@ against injected fake clients — no monkeypatching, no real subprocesses, no sl
    dataclass instance**, not monkeypatching, not Typer callbacks-with-hidden-state:
 
    ```python
-   ClientFactory = Callable[[Settings], TempReader & FanCommander]  # structural;
-   # spell the type as Callable[[Settings], IpmiClient] — IpmiClient satisfies
-   # both Protocols structurally, and callers depend on the Protocol shapes.
+   # The client satisfies both ports structurally; callers depend on Protocol
+   # shapes, so the factory's return annotation is the concrete adapter type.
+   ClientFactory = Callable[[Settings], IpmiClient]
 
-    @dataclass(frozen=True)
-    class AppDeps:
-        build_client: Callable[[Settings], IpmiClient]
-        sleep_interruptible: Callable[[threading.Event, float], bool]
+   @dataclass(frozen=True)
+   class AppDeps:
+       build_client: ClientFactory
+       sleep_interruptible: Callable[[threading.Event, float], bool]
 
-    def _default_deps() -> AppDeps:
-        return AppDeps(
-            build_client=lambda settings: IpmiClient(settings),
-            sleep_interruptible=lambda stop, timeout: stop.wait(timeout),
-        )
+   def _default_deps() -> AppDeps:
+       return AppDeps(
+           build_client=lambda settings: IpmiClient(settings),
+           sleep_interruptible=lambda stop, timeout: stop.wait(timeout),
+       )
 
-    deps = _default_deps()
-    ```
+   deps = _default_deps()
+   ```
 
     (Module-level functions, not lambdas in the class body — dataclass defaults
     of callable type must come from a factory or constructor call anyway, and
@@ -155,11 +155,11 @@ against injected fake clients — no monkeypatching, no real subprocesses, no sl
                       new_settings = watcher.reload()
                   except ConfigError as err:
                       emit config_error(error=str(err))  # last good kept
-                   else:
-                       if controller.replace_settings(new_settings):
-                           emit config_reload(...)  # only on accepted reload;
-                           # a False return means the controller already emitted
-                           # config_error and kept last-good (T5 contract)
+                  else:
+                      if controller.replace_settings(new_settings):
+                          emit config_reload(...)  # only on accepted reload;
+                          # a False return means the controller already emitted
+                          # config_error and kept last-good (T5 contract)
       ```
 
       `watcher = ConfigWatcher(path)` is constructed right after the initial

@@ -55,6 +55,7 @@ breezed status [--config PATH]                             # single snapshot: te
 breezed validate <PATH> [--probe]                          # check config; --probe reads live temp + shows result
 breezed daemon install [--start]                           # idempotent systemd unit install/upgrade (root)
 breezed daemon status                                      # installed version + unit state
+breezed daemon uninstall                                   # disable/remove unit, keep user/env/config
 ```
 
 Exit codes: `0` ok, `1` runtime error, `2` usage/config error.
@@ -100,7 +101,8 @@ fan_pct = 18
   Protocols declared in `ports.py` (structural typing — adapters never inherit);
   tests inject fakes without monkey-patching. The speed decision sits behind a
   `SpeedPolicy` Protocol so alternative control loops can replace the curve
-- No `Any` in src/ except at the single subprocess boundary
+- No `Any` in src/ except at the two sanctioned process-boundary sites: the IPMI
+  adapter (T4) and the daemon installer's systemd runner (T8)
 
 ## Metrics (Prometheus text format, port opt-in)
 

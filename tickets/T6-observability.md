@@ -36,8 +36,8 @@ format.
   the other way: controller defines the Protocol, this module implements it).
 - `src/breezed/metrics.py` (new) — `MetricsState` (with a `.render()` method),
   `start_metrics_server(port: int, state: MetricsState) -> ThreadingHTTPServer | None`.
-  Imports stdlib (`http.server`, `threading`, `socketserver` transitively) plus
-  `breezed.types` (`OperatingMode`). No third-party imports; **never** import
+   Imports stdlib (`http.server`, `threading`, `socketserver` transitively) plus
+   `breezed.types` (`OperatingMode`, `TempC`, `FanPercent`). No third-party imports; **never** import
   `prometheus_client`.
 - `tests/test_logging.py` (new) — formatter/sink tests driven by a `StringIO`
   handler attached to a fresh logger; no caplog, no monkeypatching.
@@ -104,10 +104,9 @@ format.
        def emit(self, event: EventType, /, **fields: object) -> None: ...
    ```
 
-   - Structurally satisfies T5's `EventSink` Protocol. **T5's Protocol signature
-     must be updated to `emit(self, event: EventType, /, **fields)`** — the enum
-     lives in `breezed.types`, so controller.py imports it from there; the
-     dependency direction (controller → types, logs → types) stays clean.
+   - Structurally satisfies T5's `EventSink` Protocol, whose signature already
+     takes `event: EventType` (T5 owns that Protocol; do not touch
+     `controller.py` from this ticket)
    - No runtime guard needed: ty rejects unknown names at call sites; keep a
      defensive `str(event)` only at serialization time.
    - Emission is a single call:
@@ -171,7 +170,7 @@ format.
 6. Add the server plumbing in the same module:
 
    ```python
-   def start_metrics_server(port: int, state: MetricsState) -> None | None: ...
+   def start_metrics_server(port: int, state: MetricsState) -> ThreadingHTTPServer | None: ...
    ```
 
    - Build an `http.server.BaseHTTPRequestHandler` subclass (closure over
@@ -210,11 +209,10 @@ format.
      - `test_verbose_mode_is_not_json` — same emissions through the human
        formatter; assert lines match the `%(asctime)s %(levelname)s %(message)s`
        shape (regex) and that `json.loads` raises on the first line.
-      - `test_sink_rejects_non_spec_event_names` — replaced by type-level
-        enforcement; instead assert the derived vocabulary matches SPEC:
-        `test_event_vocabulary_matches_spec` —
-        `{e.value for e in EventType} ==` the nine documented names (guards
-        accidental drift in T2's enum).
+      - `test_event_vocabulary_matches_spec` —
+        `{e.value for e in EventType}` equals the nine documented SPEC names
+        (guards accidental drift in T2's enum; unknown names are a ty failure at
+        emit sites, not a runtime one).
       - `test_sink_emits_only_spec_event_names` — drive `LoggingEventSink`
         across every `EventType` member, collect the resulting records, assert
         `record.event ∈ SPEC_EVENT_NAMES` for each (the closed-vocabulary
@@ -266,9 +264,10 @@ format.
 - [ ] `setup_logging(False)` → JSON/INFO on stdout; `setup_logging(True)` →
       `%(asctime)s %(levelname)s %(message)s`/DEBUG on stdout; repeated calls are
       idempotent (no duplicated handlers)
-- [ ] `LoggingEventSink` satisfies T5's `EventSink` Protocol structurally, maps
-      `emit(event, **fields)` onto the `breezed` logger, and raises `ValueError`
-      on any event name outside `SPEC_EVENT_NAMES`
+- [ ] `LoggingEventSink` satisfies T5's `EventSink` Protocol structurally and maps
+      `emit(event, **fields)` onto the `breezed` logger; no runtime name guard —
+      unknown event names are impossible at type-check time (ty rejects them at
+      emit sites)
 - [ ] Metrics server: `ThreadingHTTPServer` with `daemon_threads = True`, bound
       hard-coded to `127.0.0.1` on the opt-in port; `GET /metrics` and `GET /`
       return the Prometheus text block; other paths 404; bind `OSError` logs a

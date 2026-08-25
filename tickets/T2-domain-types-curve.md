@@ -81,7 +81,7 @@ all stdlib-only and fully unit-tested against SPEC curve test cases 1–8.
 ## Acceptance criteria
 
 - [ ] `src/breezed/types.py` exports `TempC`, `FanPercent`, `Celsius`,
-      `make_fan_pct`, `make_positive_int`, `OperatingMode`, `EventType`
+      `make_fan_pct`, `make_positive_int`, `DomainError`, `OperatingMode`, `EventType`
       via `__all__`; imports nothing beyond stdlib
 - [ ] `make_fan_pct(0)` and `make_fan_pct(101)` raise `ValueError`;
       boundary values `make_fan_pct(1)` / `make_fan_pct(100)` succeed
