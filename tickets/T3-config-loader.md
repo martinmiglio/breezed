@@ -228,4 +228,3 @@ class ConfigWatcher:
 
 __all__ = ["ConfigError", "DEFAULT_CURVE", "Settings", "load_settings", "ConfigWatcher"]
 ```
-

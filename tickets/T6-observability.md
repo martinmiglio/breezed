@@ -433,5 +433,3 @@ def start_metrics_server(port: int, state: MetricsState) -> ThreadingHTTPServer 
 
 __all__ = ["MetricsState", "start_metrics_server"]
 ```
-
-

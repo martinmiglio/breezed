@@ -86,5 +86,3 @@ Most scaffolding already exists (commit `5ef1052 "spec, license, and toolchain s
   install/sync time. Don't stub cli.py here.
 - `check-yaml` in pre-commit-hooks will parse `.pre-commit-config.yaml` itself; keep it valid YAML.
 - Keep ruff's rule set as configured (E/W/F/I/UP/B/SIM); expanding it is out of scope for T1.
-
-

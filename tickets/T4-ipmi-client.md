@@ -269,4 +269,3 @@ class IpmiClient:
 
 __all__ = ["IpmiError", "Runner", "IpmiClient"]
 ```
-

@@ -17,7 +17,7 @@ See [SPEC.md](SPEC.md) for full behavior, acceptance criteria, and tickets.
 
 ## Status
 
-Spec complete. Implementation tickets T1–T8 pending (see SPEC.md).
+T1 scaffold & toolchain complete — CI gates (pre-commit, pytest) green.
 
 ## License
 
