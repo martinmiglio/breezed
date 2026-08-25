@@ -18,9 +18,9 @@ import pytest
 from typer.testing import CliRunner
 
 from breezed import cli
-from breezed.cli import AppDeps, ClientFactory, app
+from breezed.cli import AppDeps, app
 from breezed.config import Settings
-from breezed.ipmi import IpmiError
+from breezed.ipmi import IpmiClient, IpmiError
 from breezed.types import FanPercent, TempC
 
 PASSWORD = "hunter2-supersecret"
@@ -151,8 +151,14 @@ def install_deps():
     def install(
         client: FakeClient,
         sleep_interruptible: Callable[[threading.Event, float], bool],
+        *,
+        captured_settings: list[Settings] | None = None,
     ) -> FakeClient:
-        build_client = cast(ClientFactory, lambda _settings: client)
+        def build_client(settings: Settings) -> IpmiClient:
+            if captured_settings is not None:
+                captured_settings.append(settings)
+            return cast(IpmiClient, client)
+
         cli.deps = AppDeps(build_client=build_client, sleep_interruptible=sleep_interruptible)
         return client
 
@@ -198,7 +204,18 @@ def log_events(output: str) -> list[dict[str, object]]:
     return events
 
 
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+@pytest.fixture(autouse=True)
+def restore_signal_handlers():
+    sigs = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        sigs.append(signal.SIGHUP)
+    saved = {sig: signal.getsignal(sig) for sig in sigs}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
 
 
 def test_help_lists_all_five_commands(runner: CliRunner):
@@ -211,7 +228,7 @@ def test_help_lists_all_five_commands(runner: CliRunner):
     ):
         result = runner.invoke(app, argv, catch_exceptions=False)
         assert result.exit_code == 0
-        combined += ANSI_RE.sub("", result.output)
+        combined += SGR_RE.sub("", result.output)
     for name in ("run", "set", "auto", "status", "validate"):
         assert name in combined
     for flag in ("--config", "-c", "--metrics-port", "--verbose", "--probe"):
@@ -252,43 +269,25 @@ def test_auto_enables_auto_mode(runner: CliRunner, config_dir: Path, install_cli
     assert json.loads(result.stdout) == {"event": "mode_change", "to": "auto"}
 
 
-def test_set_honors_config_option(runner: CliRunner, config_dir: Path):
+def test_set_honors_config_option(runner: CliRunner, config_dir: Path, install_deps):
     write_config(config_dir)
     alt_path = write_config(config_dir, "alt.toml", VALID_TOML.replace("169.254.0.1", "10.9.9.9"))
     captured: list[Settings] = []
-    client = FakeClient()
-    original = cli.deps
-    cli.deps = AppDeps(
-        build_client=cast(ClientFactory, lambda settings: (captured.append(settings), client)[1]),
-        sleep_interruptible=FakeWait([]),
-    )
-    try:
-        result = runner.invoke(
-            app, ["set", "40", "--config", str(alt_path)], catch_exceptions=False
-        )
-    finally:
-        cli.deps = original
+    client = install_deps(FakeClient(), FakeWait([]), captured_settings=captured)
+    result = runner.invoke(app, ["set", "40", "--config", str(alt_path)], catch_exceptions=False)
     assert result.exit_code == 0
     assert client.commands == ["manual", "set:40"]
     assert [settings.host for settings in captured] == ["10.9.9.9"]
 
 
-def test_auto_honors_config_option(runner: CliRunner, config_dir: Path):
+def test_auto_honors_config_option(runner: CliRunner, config_dir: Path, install_deps):
     write_config(config_dir)
     alt_path = write_config(
         config_dir, "alt-auto.toml", VALID_TOML.replace("169.254.0.1", "10.9.9.8")
     )
     captured: list[Settings] = []
-    client = FakeClient()
-    original = cli.deps
-    cli.deps = AppDeps(
-        build_client=cast(ClientFactory, lambda settings: (captured.append(settings), client)[1]),
-        sleep_interruptible=FakeWait([]),
-    )
-    try:
-        result = runner.invoke(app, ["auto", "--config", str(alt_path)], catch_exceptions=False)
-    finally:
-        cli.deps = original
+    client = install_deps(FakeClient(), FakeWait([]), captured_settings=captured)
+    result = runner.invoke(app, ["auto", "--config", str(alt_path)], catch_exceptions=False)
     assert result.exit_code == 0
     assert client.commands == ["auto"]
     assert [settings.host for settings in captured] == ["10.9.9.8"]
@@ -441,12 +440,7 @@ def test_run_sighup_reload_picks_up_new_curve(runner: CliRunner, config_dir: Pat
             [False, False, False, False],
         ),
     )
-    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
-    try:
-        result = runner.invoke(app, ["run"], catch_exceptions=False)
-    finally:
-        for sig, handler in saved.items():
-            signal.signal(sig, handler)
+    result = runner.invoke(app, ["run"], catch_exceptions=False)
     assert result.exit_code == 0
     assert client.commands == ["manual", "set:7", "set:9", "auto"]
     events = log_events(result.stdout)

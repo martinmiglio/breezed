@@ -29,7 +29,9 @@ class MetricsState:
     ipmi_errors_total: int = 0
     polls_total: int = 0
 
-    def record_poll(self, temp_c: TempC, fan_percent: FanPercent, mode: OperatingMode) -> None:
+    def record_poll(
+        self, temp_c: TempC, fan_percent: FanPercent | None, mode: OperatingMode
+    ) -> None:
         with self._lock:
             self.temp_c = temp_c
             self.fan_percent = fan_percent
