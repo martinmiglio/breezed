@@ -114,6 +114,7 @@ def test_http_endpoints_serve_rendered_body() -> None:
             urllib.request.urlopen(f"{base}/nope", timeout=2)
         assert exc_info.value.code == 404
     finally:
+        server.shutdown()
         server.server_close()
 
 

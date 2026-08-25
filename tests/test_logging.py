@@ -8,6 +8,9 @@ import io
 import json
 import logging
 import re
+from collections.abc import Iterator
+
+import pytest
 
 from breezed.controller import EventSink
 from breezed.logs import (
@@ -20,6 +23,23 @@ from breezed.types import EventType
 
 TS_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 HUMAN_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+ \w+ .+$")
+
+
+@pytest.fixture(autouse=True)
+def restore_test_logger() -> Iterator[None]:
+    logger = logging.getLogger("breezed.test")
+    prior_handlers = list(logger.handlers)
+    prior_level = logger.level
+    prior_propagate = logger.propagate
+    yield
+    for handler in list(logger.handlers):
+        if handler not in prior_handlers:
+            logger.removeHandler(handler)
+            handler.close()
+    for handler in prior_handlers:
+        logger.addHandler(handler)
+    logger.setLevel(prior_level)
+    logger.propagate = prior_propagate
 
 
 def make_json_logger() -> tuple[logging.Logger, io.StringIO]:
@@ -106,12 +126,8 @@ def test_verbose_mode_is_not_json() -> None:
     assert len(lines) == 2
     for line in lines:
         assert HUMAN_SHAPE.match(line)
-    try:
+    with pytest.raises(json.JSONDecodeError):
         json.loads(lines[0])
-        msg = "verbose output must not be JSON"
-        raise AssertionError(msg)
-    except json.JSONDecodeError:
-        pass
 
 
 def test_formatter_event_fallback_uses_message() -> None:
@@ -166,4 +182,17 @@ def test_setup_logging_idempotent() -> None:
             if handler not in prior_handlers:
                 logger.removeHandler(handler)
                 handler.close()
+        for handler in prior_handlers:
+            logger.addHandler(handler)
         logger.setLevel(prior_level)
+
+
+def test_formatter_includes_exception_payload() -> None:
+    logger, stream = make_json_logger()
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        logger.exception(EventType.IPMI_ERROR)
+    (record,) = parsed_lines(stream)
+    assert "boom" in str(record["exc"])
+    assert record["event"] == "ipmi_error"
