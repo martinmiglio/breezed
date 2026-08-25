@@ -8,7 +8,7 @@ central here so every SpeedPolicy strategy inherits them for free.
 import time
 from collections.abc import Callable
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, cast
 
 from breezed.config import Settings
 from breezed.curve import validate_curve
@@ -131,22 +131,24 @@ class Controller:
             except ValueError as exc:
                 self._sink.emit(EventType.CONFIG_ERROR, error=str(exc))
             else:
-                if self._state is not ControlState.MANUAL or self._last_pct is None:
+                if self._state is not ControlState.MANUAL:
                     self._enter_manual(pct, target)
-                elif target > self._last_pct:
-                    self._commander.set_manual_pct(pct)
-                    self._last_pct = pct
-                    self._pending_down = None
-                    self._sink.emit(
-                        EventType.SPEED_CHANGE,
-                        fan_pct=pct,
-                        target_pct=target,
-                        reason="temp_rise",
-                    )
-                elif target < self._last_pct:
-                    self._gate_downward(target, pct)
                 else:
-                    self._pending_down = None
+                    last_pct = cast(FanPercent, self._last_pct)
+                    if target > last_pct:
+                        self._commander.set_manual_pct(pct)
+                        self._last_pct = pct
+                        self._pending_down = None
+                        self._sink.emit(
+                            EventType.SPEED_CHANGE,
+                            fan_pct=pct,
+                            target_pct=target,
+                            reason="temp_rise",
+                        )
+                    elif target < last_pct:
+                        self._gate_downward(target, pct)
+                    else:
+                        self._pending_down = None
 
         self._sink.emit(
             EventType.POLL,
@@ -158,21 +160,12 @@ class Controller:
 
     def shutdown(self) -> None:
         """Restore AUTO unless already there or no command was ever issued."""
-        if self._state in (ControlState.AUTO, ControlState.UNKNOWN):
+        if self._state is not ControlState.MANUAL:
             return
-        old = self._state.value
         try:
-            self._commander.enable_auto()
+            self._force_auto("shutdown")
         except IpmiError as exc:
             self._sink.emit(EventType.IPMI_ERROR, error=str(exc))
-            return
-        self._state = ControlState.AUTO
-        self._sink.emit(
-            EventType.MODE_CHANGE,
-            **{"from": old},
-            to=ControlState.AUTO.value,
-            reason="shutdown",
-        )
 
     def replace_settings(self, new_settings: Settings) -> bool:
         """Swap in hot-reloaded settings; False (plus CONFIG_ERROR event) on invalid curve."""

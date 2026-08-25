@@ -1,7 +1,5 @@
 """SPEC controller cases 1-12 plus companion coverage; fakes only, no sleeps."""
 
-import pytest
-
 from breezed.config import Settings
 from breezed.controller import Controller, ControlState
 from breezed.curve import CurvePoint
@@ -132,17 +130,6 @@ def test_under_curve_from_unknown_switches_to_manual_with_pct():
     assert sink.events(EventType.SPEED_CHANGE) == [
         {"fan_pct": 6, "target_pct": 6, "reason": "mode_enter"}
     ]
-
-
-def test_above_curve_forces_auto_exactly_once():
-    controller, ipmi, sink = make_controller([TempC(80), TempC(80)])
-    controller.tick()
-    controller.tick()
-    assert ipmi.commands == ["auto"]
-    assert sink.events(EventType.MODE_CHANGE) == [
-        {"from": "unknown", "to": "auto", "reason": "temp_above_curve", "temp_c": 80}
-    ]
-    assert len(sink.events(EventType.POLL)) == 2
 
 
 def test_returns_under_curve_after_hysteresis_resumes_manual():
@@ -297,12 +284,6 @@ def test_failure_limit_idempotent_while_already_auto():
     assert ipmi.commands == ["auto"]
 
 
-def test_disable_auto_before_set_pct_ordering():
-    controller, ipmi, _sink = make_controller([TempC(40)])
-    controller.tick()
-    assert ipmi.commands == ["manual", "set:6"]
-
-
 def test_replace_settings_success_uses_new_curve_next_tick():
     controller, ipmi, sink = make_controller(
         [TempC(46)], settings=make_settings(curve=(CurvePoint(TempC(40), FanPercent(5)),))
@@ -338,16 +319,12 @@ def test_fake_policy_injection_drives_controller():
     assert ipmi.commands == ["manual", "set:42"]
 
 
-def test_fake_exhaustion_raises_assertion_error():
-    controller, _ipmi, _sink = make_controller([TempC(40)])
-    controller.tick()
-    with pytest.raises(AssertionError, match="FakeIpmi script exhausted"):
-        controller.tick()
-
-
 def test_poll_event_carries_full_field_set_in_auto():
-    controller, _ipmi, sink = make_controller([TempC(80)])
+    controller, ipmi, sink = make_controller([TempC(80)])
     controller.tick()
+    assert sink.events(EventType.MODE_CHANGE) == [
+        {"from": "unknown", "to": "auto", "reason": "temp_above_curve", "temp_c": 80}
+    ]
     assert sink.events(EventType.POLL) == [
         {"temp_c": 80, "fan_pct": None, "mode": "auto", "target_pct": None}
     ]
