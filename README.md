@@ -77,34 +77,15 @@ scrapes it). To run without metrics, edit the unit to drop
 `--metrics-port 9762` and `systemctl daemon-reload && systemctl restart
 breezed`; note your edit will be overwritten by the next `daemon install`.
 
+> **Migrating from the legacy C# controller on mmsrv?** Stop and disable the old
+> JDMallen.IPMITempMonitor compose stack first — two controllers fighting over
+> one iDRAC flip fan mode on every poll.
+
 ## Config example
 
-`/etc/breezed/breezed.toml`:
-
-```toml
-[settings]
-host = "169.254.0.1"
-poll_interval_s = 10
-read_failure_limit = 3
-step_down_hysteresis_s = 30
-# metrics_port = 9762
-
-[[curve]]
-temp_c = 45
-fan_pct = 6
-
-[[curve]]
-temp_c = 60
-fan_pct = 8
-
-[[curve]]
-temp_c = 68
-fan_pct = 12
-
-[[curve]]
-temp_c = 74
-fan_pct = 18
-```
+A fully commented example ships inside the package: see `breezed.toml.example`
+in the breezed templates directory (also copied to `/etc/breezed/breezed.toml`
+on first install, never overwritten after that).
 
 Secrets never go in the config file: `IDRAC_HOST`, `IDRAC_USER`, and
 `IDRAC_PASSWORD` come from the environment (`/etc/breezed.env`); host and user
@@ -128,18 +109,6 @@ mitigates this by deferring to iDRAC automatic control above the curve top and
 forcing AUTO again after repeated sensor-read failures — but you chose the
 curve points, so choose them carefully. If anything looks wrong,
 `breezed auto` hands control back to the iDRAC instantly.
-
-## Replacing the legacy C# fan-controller on mmsrv
-
-Stop and disable the old JDMallen.IPMITempMonitor compose stack **before**
-starting breezed:
-
-```sh
-docker compose down && docker compose rm   # in the legacy project directory
-```
-
-Two controllers fighting over the same iDRAC flip the fan mode back and forth
-on every poll. Never run both at once.
 
 ## License
 

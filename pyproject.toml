@@ -25,10 +25,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/breezed"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"deploy/breezed.service.template" = "breezed/templates/breezed.service.template"
-"deploy/breezed.toml.example" = "breezed/templates/breezed.toml.example"
-
 [tool.ruff]
 line-length = 100
 target-version = "py313"

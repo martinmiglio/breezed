@@ -1,4 +1,4 @@
-# Minimal valid config mirroring SPEC's example (polished version lands in deploy/ at T8).
+# Minimal valid config mirroring SPEC's example (polished version lands in src/breezed/templates at T8).
 [settings]
 host = "169.254.0.1"
 user = "root"
