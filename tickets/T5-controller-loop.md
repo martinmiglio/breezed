@@ -404,4 +404,3 @@ class Controller:
     def shutdown(self) -> None: ...                       # best-effort AUTO restore
     def replace_settings(self, new_settings: Settings) -> bool: ...  # False keeps last-good
 ```
-
