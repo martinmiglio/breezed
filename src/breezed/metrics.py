@@ -60,7 +60,12 @@ class MetricsState:
 
 
 def make_metrics_handler(state: MetricsState) -> type[BaseHTTPRequestHandler]:
+    """Bind a BaseHTTPRequestHandler subclass to the shared MetricsState."""
+
     class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
         def do_GET(self) -> None:
             if self.path in ("/metrics", "/"):
                 body = state.render().encode()
@@ -98,4 +103,4 @@ def start_metrics_server(port: int, state: MetricsState) -> ThreadingHTTPServer 
     return server
 
 
-__all__ = ["MetricsState", "start_metrics_server"]
+__all__ = ["MetricsState", "make_metrics_handler", "start_metrics_server"]

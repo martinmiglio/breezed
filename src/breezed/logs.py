@@ -25,7 +25,9 @@ class JsonLogFormatter(logging.Formatter):
 
     Extra fields come straight out of record.__dict__ minus the standard
     LogRecord attribute set; json.dumps(default=str) lets StrEnum members
-    serialize as their lowercase string values.
+    serialize as their lowercase string values. The trailing newline this
+    formatter appends pairs with setup_logging's handler terminator="", so
+    exactly one newline separates JSON objects on stdout.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -34,6 +36,8 @@ class JsonLogFormatter(logging.Formatter):
         }
         if "event" not in payload:
             payload["event"] = record.getMessage()
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
         ts = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         payload["ts"] = ts
         payload["level"] = record.levelname
