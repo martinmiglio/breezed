@@ -345,4 +345,93 @@ format.
   (ephemeral) so parallel pytest runs never race for a fixed port.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
 
+## Draft interfaces (for review)
+
+> DRAFT for human review — sketches, not implementations. `EventType` is T2's
+> (contract owner: types.py); `EventSink` is T5's (contract owner: controller.py) —
+> this ticket only implements it structurally. Spellings must not drift.
+
+```python
+# src/breezed/logs.py
+import logging
+
+from breezed.types import EventType  # noqa: compile-check strips
+
+# Derived, never hand-edited — change EventType instead (contract owner: T2 types.py).
+SPEC_EVENT_NAMES: frozenset[str] = frozenset(e.value for e in EventType)
+
+
+class JsonLogFormatter(logging.Formatter):
+    """One JSON object per line: ts (UTC ISO-8601 Z, second precision), level,
+
+    logger, event + extra fields as top-level keys (exclusion set computed from a
+    bare LogRecord's __dict__); json.dumps(..., default=str) lets StrEnums through.
+    """
+
+    def format(self, record: logging.LogRecord) -> str: ...
+
+
+class LoggingEventSink:
+    """Structurally satisfies T5's EventSink Protocol; no runtime name guard."""
+
+    def __init__(self, logger: logging.Logger | None = None) -> None: ...
+    def emit(self, event: EventType, /, **fields: object) -> None: ...
+
+
+def setup_logging(verbose: bool) -> None:
+    """Idempotent; root 'breezed' logger → StreamHandler(sys.stdout).
+
+    verbose=False → INFO + JsonLogFormatter; True → DEBUG +
+    Formatter("%(asctime)s %(levelname)s %(message)s"). Never basicConfig().
+    """
+    ...
+
+
+__all__ = ["SPEC_EVENT_NAMES", "JsonLogFormatter", "LoggingEventSink", "setup_logging"]
+
+# src/breezed/metrics.py
+import threading
+from dataclasses import dataclass, field
+from http.server import ThreadingHTTPServer
+
+from breezed.types import FanPercent, OperatingMode, TempC  # noqa: strips
+
+
+@dataclass
+class MetricsState:
+    """Mutable BY DECISION (task 5): one Lock makes update-all and snapshot-all
+
+    atomic so scrapes never see torn state. Counters only ever increase.
+    """
+
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    temp_c: TempC | None = None
+    fan_percent: FanPercent | None = None
+    mode: OperatingMode = OperatingMode.UNKNOWN
+    ipmi_errors_total: int = 0
+    polls_total: int = 0
+
+    def record_poll(
+        self, temp_c: TempC, fan_percent: FanPercent, mode: OperatingMode
+    ) -> None: ...
+    def record_ipmi_error(self) -> None: ...
+    def render(self) -> str:
+        """Exact five-line SPEC block (no # HELP/# TYPE), trailing newline;
+
+        gauge lines omitted before the first poll.
+        """
+        ...
+
+
+def start_metrics_server(port: int, state: MetricsState) -> ThreadingHTTPServer | None:
+    """127.0.0.1 bind (hard-coded), daemon_threads=True, serve_forever on a
+
+    daemon thread; returns None on bind OSError (degraded-but-running).
+    """
+    ...
+
+
+__all__ = ["MetricsState", "start_metrics_server"]
+```
+
 

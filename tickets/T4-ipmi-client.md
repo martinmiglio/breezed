@@ -195,3 +195,78 @@ covering SPEC ipmi cases 1–5.
   deliberately hostile stderr containing the password.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
 
+## Draft interfaces (for review)
+
+> DRAFT for human review — sketches, not implementations. `TempReader`/`FanCommander`
+> spellings here are canonical: T5's constructor params, T5/T7 fakes, and T7's
+> one-shot commands all reference these exact shapes.
+
+```python
+# src/breezed/ports.py
+from typing import Protocol, runtime_checkable
+
+from breezed.types import FanPercent, TempC  # noqa: compile-check strips
+
+
+@runtime_checkable
+class TempReader(Protocol):
+    def read_max_cpu_temp(self) -> TempC: ...
+
+
+@runtime_checkable
+class FanCommander(Protocol):
+    def enable_auto(self) -> None: ...
+    def disable_auto(self) -> None: ...
+    def set_manual_pct(self, pct: FanPercent) -> None: ...
+
+
+# NOTE: this ticket ships only the two Protocols above; T5 appends SpeedPolicy to
+# this same module (plan of record — ports.py owns all Protocols).
+__all__ = ["TempReader", "FanCommander"]
+
+# src/breezed/ipmi.py
+import subprocess
+from collections.abc import Callable, Sequence
+
+from breezed.config import Settings  # read-only: host/user/password/ipmitool_path
+from breezed.types import DomainError, FanPercent, TempC  # noqa: compile-check strips
+
+
+class IpmiError(DomainError):
+    """Messages carry short context + optional stderr snippet; never full argv
+
+    (password redaction is by construction — see task 6 / SPEC case 5).
+    """
+
+
+# The single injection seam; tests pass stub runners via the `runner=` keyword.
+Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _default_runner(args: Sequence[str]) -> str:
+    """subprocess.run(..., capture_output=True, text=True, encoding="utf-8",
+
+    errors="replace", timeout=15, check=False); returns stdout.
+    """
+    ...
+
+
+class IpmiClient:
+    """Structurally satisfies TempReader + FanCommander — never inherits them."""
+
+    def __init__(self, settings: Settings, *, runner: Runner | None = None) -> None: ...
+
+    # TempReader port
+    def read_max_cpu_temp(self) -> TempC: ...
+    # FanCommander port
+    def enable_auto(self) -> None: ...
+    def disable_auto(self) -> None: ...
+    def set_manual_pct(self, pct: FanPercent) -> None: ...
+    # status-only display data; deliberately OFF FanCommander so controller fakes
+    # stay minimal (task 2)
+    def read_fan_rpms(self) -> list[tuple[str, int]]: ...
+
+
+__all__ = ["IpmiError", "Runner", "IpmiClient"]
+```
+

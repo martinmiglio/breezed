@@ -322,3 +322,86 @@ controller cases 1–12 with a fake client and fake clock.
   `watcher.reload()` and are logged there. Case 12 exercises the former.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
 
+## Draft interfaces (for review)
+
+> DRAFT for human review — skeletons/signatures only. `SpeedPolicy` spelling is owned
+> by ports.py (appended by this ticket); `EventSink` is owned by controller.py and
+> implemented structurally by T6's `LoggingEventSink`; `EventType` comes from T2
+> unchanged.
+
+```python
+# appended to src/breezed/ports.py BY THIS TICKET (contract owner: ports.py owns all Protocols)
+from breezed.config import Settings  # noqa: compile-check strips
+from breezed.types import TempC  # noqa: compile-check strips
+
+
+class SpeedPolicy(Protocol):
+    """Stateless w.r.t. config on purpose — current Settings passed each call."""
+
+    def target_pct(self, temp_c: TempC, settings: Settings) -> int | None: ...
+
+# src/breezed/policy.py
+from dataclasses import dataclass
+
+from breezed.config import Settings  # noqa: compile-check strips
+from breezed.curve import interpolate  # noqa: compile-check strips
+from breezed.types import TempC  # noqa: compile-check strips
+
+
+@dataclass(frozen=True, slots=True)
+class CurvePolicy:
+    """Shipped v1 strategy; satisfies SpeedPolicy STRUCTURALLY — never inherits."""
+
+    def target_pct(self, temp_c: TempC, settings: Settings) -> int | None:
+        return interpolate(settings.curve, temp_c)
+
+
+__all__ = ["CurvePolicy"]
+
+# src/breezed/controller.py
+import time
+from collections.abc import Callable
+from enum import StrEnum
+from typing import Protocol
+
+from breezed.config import Settings  # noqa: compile-check strips
+from breezed.ports import FanCommander, SpeedPolicy, TempReader  # noqa: strips
+from breezed.types import EventType, FanPercent, TempC  # noqa: compile-check strips
+
+
+class ControlState(StrEnum):
+    """This machine's belief about the iDRAC — distinct from T2's OperatingMode."""
+
+    UNKNOWN = "unknown"
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
+# contract owner: T5 controller.py — T6 LoggingEventSink implements this structurally;
+# ty enforces EventType members at every emit site (no runtime string guard)
+class EventSink(Protocol):
+    def emit(self, event: EventType, /, **fields: object) -> None: ...
+
+
+class Controller:
+    _state: ControlState                 # starts UNKNOWN
+    _last_pct: FanPercent | None
+    _failure_streak: int                 # starts 0
+    _pending_down: tuple[FanPercent, float] | None   # (target pct, first-below ts)
+
+    def __init__(
+        self,
+        reader: TempReader,
+        commander: FanCommander,
+        settings: Settings,
+        sink: EventSink,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        policy: SpeedPolicy | None = None,   # defaults to CurvePolicy()
+    ) -> None: ...
+
+    def tick(self) -> None: ...
+    def shutdown(self) -> None: ...                       # best-effort AUTO restore
+    def replace_settings(self, new_settings: Settings) -> bool: ...  # False keeps last-good
+```
+

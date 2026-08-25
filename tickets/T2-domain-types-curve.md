@@ -130,3 +130,100 @@ all stdlib-only and fully unit-tested against SPEC curve test cases 1–8.
   `StrEnum` members serialize via `str()` directly into JSON logs in T6 — do not add a
   `.value` mapping layer later.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
+
+## Draft interfaces (for review)
+
+> DRAFT for human review — sketches, not implementations. Names/signatures below are
+> the proposal; they must stay identical wherever other tickets reference them
+> (`EventType` → consumed by T5 emits and T6 derivation; `DomainError` → subclassed
+> by T3/T4; `make_fan_pct`/`make_positive_int` → called by T3/T5/T7).
+
+```python
+# src/breezed/types.py
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import NewType
+
+TempC = NewType("TempC", int)            # sensor readings (max CPU temp from SDR)
+FanPercent = NewType("FanPercent", int)  # duty cycle, validated 1..100 at construction
+Celsius = NewType("Celsius", int)        # curve point abscissas — distinct from TempC
+
+
+def make_fan_pct(value: int) -> FanPercent:
+    """Validated constructor; raises ValueError outside 1..100."""
+    ...
+
+
+def make_positive_int(name: str, value: int) -> int:
+    """Interval-style setting; raises ValueError('{name} must be > 0, got {value}')."""
+    ...
+
+
+class DomainError(ValueError):
+    """Shared base; T3's ConfigError and T4's IpmiError subclass this."""
+
+
+class OperatingMode(StrEnum):
+    """Domain vocabulary; members serialize via str() straight into JSON logs (T6)."""
+
+    UNKNOWN = "unknown"
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
+# contract owner: T2 types.py — T5 emits these members; T6 derives SPEC_EVENT_NAMES
+class EventType(StrEnum):
+    STARTUP = "startup"
+    POLL = "poll"
+    MODE_CHANGE = "mode_change"
+    SPEED_CHANGE = "speed_change"
+    HYSTERESIS_WAIT = "hysteresis_wait"
+    CONFIG_RELOAD = "config_reload"
+    CONFIG_ERROR = "config_error"
+    IPMI_ERROR = "ipmi_error"
+    SHUTDOWN = "shutdown"
+
+
+__all__ = [
+    "TempC",
+    "FanPercent",
+    "Celsius",
+    "make_fan_pct",
+    "make_positive_int",
+    "DomainError",
+    "OperatingMode",
+    "EventType",
+]
+
+# src/breezed/curve.py
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from breezed.types import Celsius, FanPercent, TempC  # noqa: compile-check strips
+
+
+@dataclass(frozen=True, slots=True)
+class CurvePoint:
+    temp_c: Celsius
+    fan_pct: FanPercent
+
+
+def validate_curve(points: Sequence[CurvePoint]) -> tuple[CurvePoint, ...]:
+    """Empty → ValueError; any adjacent pair with temp_c[i] >= temp_c[i+1] → ValueError.
+
+    Returns a normalized tuple copy.
+    """
+    ...
+
+
+def interpolate(curve: Sequence[CurvePoint], temp_c: TempC) -> int | None:
+    """At-or-above top point → None (AUTO signal); below first → first fan_pct;
+
+    otherwise linear interpolation between bracketing points, rounded with built-in
+    round() (banker's rounding — never int() truncation).
+    """
+    ...
+
+
+__all__ = ["CurvePoint", "validate_curve", "interpolate"]
+```

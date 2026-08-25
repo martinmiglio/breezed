@@ -245,3 +245,99 @@ Sections, in order:
   `FileNotFoundError`.
 - Docs+CLI diff discipline: do not touch `curve/config/ipmi/controller/metrics`
   modules; if pre-commit fixers rewrite files, commit fixed versions.
+
+## Draft interfaces (for review)
+
+> DRAFT for human review — sketches, not implementations. Exit-code/report JSON
+> shapes follow T7's contract; `InstallerPaths` defaults match task 2 verbatim.
+
+```python
+# src/breezed/daemon.py
+import os
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class InstallerPaths:
+    unit_path: Path = Path("/etc/systemd/system/breezed.service")
+    env_path: Path = Path("/etc/breezed.env")
+    config_dir: Path = Path("/etc/breezed")
+
+
+class FileOps(Protocol):
+    """FS seam — every filesystem effect goes through this; fakes replace it in tests."""
+
+    def write_text(self, path: Path, text: str) -> None: ...
+    def mkdir(self, path: Path) -> None: ...
+    def chown(self, path: Path, owner: str, group: str) -> None: ...  # e.g. ("root", "breezed")
+    def chmod(self, path: Path, mode: int) -> None: ...
+    def stat(self, path: Path) -> os.stat_result | None: ...  # None when absent
+
+
+class RealFileOps:
+    """The one production FileOps; thin delegation onto pathlib/os."""
+
+    def write_text(self, path: Path, text: str) -> None: ...
+    def mkdir(self, path: Path) -> None: ...
+    def chown(self, path: Path, owner: str, group: str) -> None: ...
+    def chmod(self, path: Path, mode: int) -> None: ...
+    def stat(self, path: Path) -> os.stat_result | None: ...
+
+
+SystemdRunner = Callable[[list[str]], None]
+
+
+def _run_systemctl(argv: list[str]) -> None:
+    """The ticket's 'subprocess.run_wrapper': module-level thin wrapper around
+
+    subprocess.run; sole default for the injected runner (sanctioned second
+    subprocess site per SPEC).
+    """
+    ...
+
+
+@dataclass(frozen=True, slots=True)
+class InstallReport:
+    created: tuple[str, ...]      # steps that created/wrote something
+    skipped: tuple[str, ...]      # idempotent no-op steps
+    unit_version: str             # version stamped into the rendered unit
+    started: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonStatus:
+    unit_present: bool
+    active: bool                  # systemctl is-active
+    enabled: bool                 # systemctl is-enabled
+    unit_version: str | None      # stamp read from installed unit; None if absent
+    binary_version: str           # running breezed.__version__ (drift vs unit_version)
+
+
+class DaemonInstaller:
+    def __init__(
+        self,
+        paths: InstallerPaths = InstallerPaths(),
+        *,
+        runner: SystemdRunner = _run_systemctl,
+        fs: FileOps = RealFileOps(),     # stateless; safe shared default
+        exec_path: str | None = None,    # defaults to current executable
+        require_root: bool = True,
+    ) -> None: ...
+
+    def install(self, *, start: bool = False) -> InstallReport: ...
+    def status(self) -> DaemonStatus: ...
+    def uninstall(self) -> None: ...     # unit only; user/env/config untouched
+
+
+__all__ = [
+    "InstallerPaths",
+    "FileOps",
+    "RealFileOps",
+    "InstallReport",
+    "DaemonStatus",
+    "DaemonInstaller",
+]
+```

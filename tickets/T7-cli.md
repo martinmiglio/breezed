@@ -401,3 +401,75 @@ against injected fake clients — no monkeypatching, no real subprocesses, no sl
   mounted onto this same `app`): keep cli.py free of module-level side effects
   beyond `app` and `deps` so `app.add_typer(...)` can be added later without
   rework. Do not stub the daemon commands here.
+
+## Draft interfaces (for review)
+
+> DRAFT for human review — signatures only, no bodies. Command functions are shown
+> as plain annotated defs; at implementation each gets `@app.command()` and Typer
+> maps params to options/args as noted in each docstring.
+
+```python
+# src/breezed/cli.py
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import typer  # noqa: compile-check strips
+from breezed.config import Settings  # noqa: compile-check strips
+from breezed.ipmi import IpmiClient  # noqa: compile-check strips
+
+app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
+
+# The client satisfies both ports structurally; callers depend on Protocol shapes,
+# so the factory's return annotation is the concrete adapter type (T4 IpmiClient).
+ClientFactory = Callable[[Settings], IpmiClient]
+
+
+@dataclass(frozen=True)
+class AppDeps:
+    build_client: ClientFactory
+    sleep_interruptible: Callable[[threading.Event, float], bool]
+
+
+def _default_deps() -> AppDeps: ...
+
+
+deps: AppDeps = _default_deps()
+
+
+def run(
+    config: Path = Path("breezed.toml"),
+    metrics_port: int | None = None,
+    verbose: bool = False,
+) -> None:
+    """Typer mapping: --config/-c PATH (default "breezed.toml"); --metrics-port INT
+
+    overrides settings.metrics_port when given; -v/--verbose flag.
+    """
+
+
+def set(pct: int) -> None:
+    """Typer mapping: required PCT int argument; outside 1..100 ⇒ exit 2."""
+
+
+def auto() -> None:
+    """Typer mapping: no options."""
+
+
+def status(config: Path = Path("breezed.toml")) -> None:
+    """Typer mapping: --config PATH (default "breezed.toml")."""
+
+
+def validate(path: Path, probe: bool = False) -> None:
+    """Typer mapping: required positional PATH; --probe optional flag."""
+
+
+# AC export list exactly: app + deps seam (AppDeps/ClientFactory stay plainly
+# importable by tests regardless of __all__).
+__all__ = ["app", "deps"]
+```
+
+Note: `set` keeps its builtin-shadowing function name so the command name derives
+naturally (`typer` uses the function name); if review prefers, rename to a private
+impl with an explicit `@app.command("set")` name — signature stays as drafted.

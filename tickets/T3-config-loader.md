@@ -158,3 +158,74 @@ SPEC config cases 1–8.
   flaky on the dev machine's fs.
 - Use `uvx` for ruff/ty per T1's note; the system-wide tools are stale.
 
+## Draft interfaces (for review)
+
+> DRAFT for human review — sketches, not implementations. Consumes T2's domain
+> constructors/validators exclusively (validation-split discipline); `Settings` and
+> `DEFAULT_CURVE` shapes are referenced by T4 (constructor arg) and T5 (fallback +
+> hot-reload swap).
+
+```python
+# src/breezed/config.py
+from dataclasses import dataclass
+from pathlib import Path
+
+from breezed.curve import CurvePoint, validate_curve  # noqa: compile-check strips
+from breezed.types import (  # noqa: compile-check strips
+    Celsius,
+    DomainError,
+    FanPercent,
+    TempC,
+    make_fan_pct,
+    make_positive_int,
+)
+
+
+class ConfigError(DomainError):
+    """Field-naming failure; also wraps tomllib.TOMLDecodeError and OSError.
+
+    Messages reference field names, never secret values (password discipline).
+    """
+
+
+# Built through T2 constructors — no bare primitives crossing boundaries.
+DEFAULT_CURVE: tuple[CurvePoint, ...] = (
+    CurvePoint(temp_c=Celsius(45), fan_pct=make_fan_pct(6)),
+    CurvePoint(temp_c=Celsius(60), fan_pct=make_fan_pct(8)),
+    CurvePoint(temp_c=Celsius(68), fan_pct=make_fan_pct(12)),
+    CurvePoint(temp_c=Celsius(74), fan_pct=make_fan_pct(18)),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    host: str                        # required: [settings].host or IDRAC_HOST
+    user: str                        # required: [settings].user or IDRAC_USER
+    password: str                    # env-only (IDRAC_PASSWORD); may be ""
+    curve: tuple[CurvePoint, ...]
+    poll_interval_s: int = 10
+    read_failure_limit: int = 3
+    step_down_hysteresis_s: int = 30
+    metrics_port: int | None = None
+    ipmitool_path: str = "/usr/bin/ipmitool"
+
+
+def load_settings(path: str | Path) -> Settings:
+    """Binary-mode tomllib load; env wins over file for host/user/password;
+
+    omitted/empty [[curve]] → DEFAULT_CURVE; unknown keys ignored everywhere.
+    """
+    ...
+
+
+class ConfigWatcher:
+    """mtime_ns-tracked hot-reload helper; caller owns the last-good Settings."""
+
+    def __init__(self, path: str | Path) -> None: ...
+    def changed(self) -> bool: ...          # vanished file counts as changed
+    def reload(self) -> Settings: ...       # mtime refreshed on success ONLY
+
+
+__all__ = ["ConfigError", "DEFAULT_CURVE", "Settings", "load_settings", "ConfigWatcher"]
+```
+
