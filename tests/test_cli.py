@@ -1,8 +1,6 @@
 """T7 CLI tests: CliRunner + fakes injected through the deps seam only.
 
-No monkeypatching, no real subprocesses, no sleeps. SIGHUP-driven reload tests
-send the real signal (run registers handlers in the main thread) and restore
-the previous handlers afterwards.
+No monkeypatching of internals beyond cli.deps, no real subprocesses, no sleeps.
 """
 
 import json
@@ -175,12 +173,6 @@ def _bump(path: Path, offset_ns: int) -> None:
     os.utime(path, ns=(stamp, stamp))
 
 
-def _hup_after_write(path: Path, body: str, offset_ns: int) -> None:
-    path.write_text(body)
-    _bump(path, offset_ns)
-    os.kill(os.getpid(), signal.SIGHUP)
-
-
 def log_events(output: str) -> list[dict[str, object]]:
     events = []
     for line in output.splitlines():
@@ -200,8 +192,6 @@ SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 @pytest.fixture(autouse=True)
 def restore_signal_handlers():
     sigs = [signal.SIGINT, signal.SIGTERM]
-    if hasattr(signal, "SIGHUP"):
-        sigs.append(signal.SIGHUP)
     saved = {sig: signal.getsignal(sig) for sig in sigs}
     yield
     for sig, handler in saved.items():
@@ -421,31 +411,6 @@ def test_run_ticks_controller_and_stops_via_stop_event(
     assert len(startups) == 1
 
 
-def test_run_sighup_reload_picks_up_new_curve(runner: CliRunner, config_dir: Path, install_deps):
-    cfg = write_config(config_dir)
-
-    def apply_good_reload() -> None:
-        _hup_after_write(cfg, GOOD_RELOAD_TOML, 1)
-
-    def apply_broken_reload() -> None:
-        _hup_after_write(cfg, BROKEN_TOML, 2)
-
-    client = install_deps(
-        FakeClient(temps=[TempC(50), TempC(52), TempC(52), TempC(52)]),
-        scripted_wait(
-            {2: apply_good_reload, 4: apply_broken_reload},
-            [False, False, False, False],
-        ),
-    )
-    result = runner.invoke(app, ["run"], catch_exceptions=False)
-    assert result.exit_code == 0
-    assert client.commands == ["manual", "set:7", "set:9", "auto"]
-    events = log_events(result.stdout)
-    names = [e.get("event") for e in events]
-    assert "config_reload" in names
-    assert "config_error" in names
-
-
 def test_run_ipmi_failures_force_auto_then_shutdown_restores_auto(
     runner: CliRunner, config_dir: Path, install_deps
 ):
@@ -465,3 +430,73 @@ def test_run_ipmi_failures_force_auto_then_shutdown_restores_auto(
     ]
     assert len(forced) == 1
     assert client.commands.count("auto") == 1
+
+
+def test_run_fatal_crash_emits_structured_error_event(runner: CliRunner, config_dir: Path):
+    write_config(config_dir)
+    original = cli.deps
+
+    def exploding_client(_settings: Settings) -> IpmiClient:
+        raise RuntimeError("disk on fire")
+
+    cli.deps = AppDeps(
+        build_client=exploding_client,
+        sleep_interruptible=scripted_wait({}, []),
+    )
+    try:
+        result = runner.invoke(app, ["run"])
+    finally:
+        cli.deps = original
+    assert result.exit_code == 1
+    fatals = [
+        e
+        for e in log_events(result.stdout)
+        if e.get("event") == "fatal" and e.get("level") == "ERROR"
+    ]
+    assert len(fatals) == 1
+    fatal = fatals[0]
+    assert fatal["error"] == "RuntimeError"
+    assert fatal["detail"] == "disk on fire"
+    assert "Traceback (most recent call last)" in str(fatal["traceback"])
+
+
+def test_run_reloads_on_mtime_change_without_signal(
+    runner: CliRunner, config_dir: Path, install_deps
+):
+    cfg = write_config(config_dir)
+
+    def apply_good_edit() -> None:
+        path = cfg
+        path.write_text(GOOD_RELOAD_TOML)
+        _bump(path, 1)
+
+    client = install_deps(
+        FakeClient(temps=[TempC(50), TempC(52), TempC(54)]),
+        scripted_wait({2: apply_good_edit}, [False, False, False]),
+    )
+    result = runner.invoke(app, ["run"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert client.commands == ["manual", "set:7", "set:10", "auto"]
+    assert "config_reload" in [e.get("event") for e in log_events(result.stdout)]
+
+
+def test_run_invalid_edit_without_signal_keeps_last_good_config(
+    runner: CliRunner, config_dir: Path, install_deps
+):
+    cfg = write_config(config_dir)
+
+    def apply_broken_edit() -> None:
+        path = cfg
+        path.write_text(BROKEN_TOML)
+        _bump(path, 2)
+
+    client = install_deps(
+        FakeClient(temps=[TempC(50), TempC(52), TempC(54)]),
+        scripted_wait({2: apply_broken_edit}, [False, False, False]),
+    )
+    result = runner.invoke(app, ["run"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert client.commands == ["manual", "set:7", "auto"]
+    names = [e.get("event") for e in log_events(result.stdout)]
+    assert "config_error" in names
+    assert "config_reload" not in names

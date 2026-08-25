@@ -24,10 +24,11 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+# MemoryDenyWriteExecute and RestrictNamespaces removed after live testing:
+# either one blocks thread creation at metrics-server startup under this
+# sandbox ("can't start new thread"); revisit individually if ever needed.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
 RestrictSUIDSGID=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

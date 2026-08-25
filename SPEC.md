@@ -43,7 +43,7 @@ Replacement for the C# JDMallen.IPMITempMonitor currently running on mmsrv.
 | Control strategy | Speed decision behind a `SpeedPolicy` Protocol (`target_pct(temp_c, settings)`); `CurvePolicy` ships in v1; hysteresis/safety stay central in the controller |
 | Event vocabulary | `EventType(StrEnum)` in the domain layer — closed set enforced by ty at emit sites; no runtime string guard |
 | Validation split | Adapters (config loader) validate structure only; all business rules live in domain constructors/validators (`make_fan_pct`, `make_positive_int`, `validate_curve`) |
-| Deployment | systemd only: unit file written/refreshed idempotently by `breezed daemon install`; no Docker/Containerfile |
+| Deployment | systemd only: `breezed daemon install` runs unprivileged and renders a self-contained, idempotent POSIX-sh script that the user reviews and escalates themselves (`sudo sh <script>`); no Docker/Containerfile |
 
 ## CLI shape
 
