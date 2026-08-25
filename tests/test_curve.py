@@ -55,7 +55,7 @@ def test_at_or_above_top_returns_none():
 
 
 def test_empty_curve_raises_value_error():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="curve must contain at least one point"):
         interpolate([], TempC(50))
 
 

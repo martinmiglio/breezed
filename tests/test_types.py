@@ -27,9 +27,9 @@ SPEC_EVENT_NAMES = {
 
 
 def test_make_fan_pct_boundaries():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fan_pct must be in 1..100"):
         make_fan_pct(0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fan_pct must be in 1..100"):
         make_fan_pct(101)
     assert make_fan_pct(1) == FanPercent(1)
     assert make_fan_pct(100) == FanPercent(100)
