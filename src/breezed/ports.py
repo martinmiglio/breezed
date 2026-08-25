@@ -26,7 +26,6 @@ class FanCommander(Protocol):
     def set_manual_pct(self, pct: FanPercent) -> None: ...
 
 
-@runtime_checkable
 class SpeedPolicy(Protocol):
     """Stateless w.r.t. config on purpose — current Settings passed each call."""
 
