@@ -3,12 +3,12 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from breezed.types import Celsius, FanPercent, TempC
+from breezed.types import FanPercent, TempC
 
 
 @dataclass(frozen=True, slots=True)
 class CurvePoint:
-    temp_c: Celsius
+    temp_c: TempC
     fan_pct: FanPercent
 
 
