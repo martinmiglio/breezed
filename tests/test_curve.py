@@ -5,18 +5,18 @@ from collections.abc import Sequence
 import pytest
 
 from breezed.curve import CurvePoint, interpolate, validate_curve
-from breezed.types import Celsius, FanPercent, TempC
+from breezed.types import FanPercent, TempC
 
 
 def make_curve(*points: tuple[int, int]) -> Sequence[CurvePoint]:
-    return [CurvePoint(Celsius(t), FanPercent(p)) for t, p in points]
+    return [CurvePoint(TempC(t), FanPercent(p)) for t, p in points]
 
 
 DEFAULT_CURVE = [
-    CurvePoint(Celsius(45), FanPercent(6)),
-    CurvePoint(Celsius(60), FanPercent(8)),
-    CurvePoint(Celsius(68), FanPercent(12)),
-    CurvePoint(Celsius(74), FanPercent(18)),
+    CurvePoint(TempC(45), FanPercent(6)),
+    CurvePoint(TempC(60), FanPercent(8)),
+    CurvePoint(TempC(68), FanPercent(12)),
+    CurvePoint(TempC(74), FanPercent(18)),
 ]
 
 
@@ -35,7 +35,7 @@ def test_exactly_on_point_returns_that_points_pct():
     ("curve", "temp", "expected"),
     [
         pytest.param(DEFAULT_CURVE, TempC(52), 7, id="quarter"),
-        pytest.param(DEFAULT_CURVE, TempC((60 + 68) // 2), round((8 + 12) / 2), id="midpoint"),
+        pytest.param(DEFAULT_CURVE, TempC(64), 10, id="midpoint"),
         pytest.param(
             make_curve((0, 7), (10, 8)),
             TempC(5),
@@ -60,7 +60,7 @@ def test_empty_curve_raises_value_error():
 
 
 def test_single_point_curve():
-    curve = validate_curve([CurvePoint(Celsius(50), FanPercent(10))])
+    curve = validate_curve([CurvePoint(TempC(50), FanPercent(10))])
     assert interpolate(curve, TempC(40)) == 10
     assert interpolate(curve, TempC(50)) is None
     assert interpolate(curve, TempC(60)) is None

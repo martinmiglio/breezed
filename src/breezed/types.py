@@ -9,7 +9,6 @@ from typing import NewType
 
 TempC = NewType("TempC", int)
 FanPercent = NewType("FanPercent", int)
-Celsius = NewType("Celsius", int)
 
 
 def make_fan_pct(value: int) -> FanPercent:
@@ -55,7 +54,6 @@ class EventType(StrEnum):
 
 
 __all__ = [
-    "Celsius",
     "DomainError",
     "EventType",
     "FanPercent",
