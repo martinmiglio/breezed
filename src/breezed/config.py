@@ -106,7 +106,7 @@ def _metrics_port(table: dict[str, Any]) -> int | None:
 
 def _secret(table: dict[str, Any], key: str, env_key: str) -> str | None:
     env_value = os.environ.get(env_key)
-    if env_value is not None:
+    if env_value:
         return env_value
     return _require_str(table, key)
 
@@ -207,8 +207,13 @@ class ConfigWatcher:
             return True
 
     def reload(self) -> Settings:
+        try:
+            mtime_ns = self._path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
         settings = load_settings(self._path)
-        self._mtime_ns = self._path.stat().st_mtime_ns
+        if mtime_ns is not None:
+            self._mtime_ns = mtime_ns
         return settings
 
 

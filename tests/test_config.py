@@ -102,6 +102,30 @@ def test_env_overrides_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert settings.password == "envpass"
 
 
+def test_empty_env_values_treated_as_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = write_config(
+        tmp_path / "with_identity.toml",
+        '[settings]\nhost = "file-host"\nuser = "file-user"\n',
+    )
+
+    monkeypatch.setenv("IDRAC_HOST", "")
+    monkeypatch.setenv("IDRAC_PASSWORD", "")
+    settings = load_settings(path)
+    assert settings.host == "file-host"
+    assert settings.password == ""
+
+    monkeypatch.delenv("IDRAC_HOST")
+    monkeypatch.setenv("IDRAC_USER", "")
+    bare_path = write_config(tmp_path / "no_user.toml", '[settings]\nhost = "h"\n')
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(bare_path)
+
+    assert "IDRAC_USER" in str(excinfo.value)
+
+
 def test_non_ascending_curve_rejected(tmp_path: Path) -> None:
     path = write_config(
         tmp_path / "flat_curve.toml",
@@ -212,6 +236,32 @@ def test_failed_reload_keeps_last_good_settings_usable(tmp_path: Path) -> None:
     assert recovered.host == "recovered"
     assert last_good.host == "good"
     assert last_good.curve == DEFAULT_CURVE
+
+
+def test_vanished_file_after_load_surfaces_config_error_not_oserror(
+    tmp_path: Path,
+) -> None:
+    path = write_config(tmp_path / "vanish.toml", '[settings]\nhost = "good"\nuser = "u"\n')
+    watcher = ConfigWatcher(path)
+    watcher.reload()
+    assert not watcher.changed()
+
+    path.unlink()
+    assert watcher.changed()
+
+    with pytest.raises(ConfigError):
+        watcher.reload()
+
+
+def test_empty_ipmitool_path_falls_back_to_default(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path / "empty_tool_path.toml",
+        '[settings]\nhost = "h"\nuser = "u"\nipmitool_path = ""\n',
+    )
+
+    settings = load_settings(path)
+
+    assert settings.ipmitool_path == "/usr/bin/ipmitool"
 
 
 def test_settings_field_set_matches_contract() -> None:
