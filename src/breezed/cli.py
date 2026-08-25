@@ -18,7 +18,7 @@ from typing import Annotated, NoReturn
 import typer
 
 from breezed.config import ConfigError, ConfigWatcher, Settings, load_settings
-from breezed.controller import Controller
+from breezed.controller import Controller, EventSink
 from breezed.curve import interpolate
 from breezed.ipmi import IpmiClient, IpmiError
 from breezed.logs import LoggingEventSink, setup_logging
@@ -58,10 +58,17 @@ def _fail(err: Exception, *, code: int) -> NoReturn:
     raise typer.Exit(code=code) from err
 
 
+def _load_settings_or_fail(config: Path) -> Settings:
+    try:
+        return load_settings(config)
+    except ConfigError as err:
+        _fail(err, code=2)
+
+
 class _MetricsSink:
     """Thin EventSink wrapper: forwards to LoggingEventSink, mirrors counters."""
 
-    def __init__(self, base: LoggingEventSink, state: MetricsState | None) -> None:
+    def __init__(self, base: EventSink, state: MetricsState | None) -> None:
         self._base = base
         self._state = state
 
@@ -75,8 +82,9 @@ class _MetricsSink:
             temp_c = fields.get("temp_c")
             fan_pct = fields.get("fan_pct")
             mode = fields.get("mode")
-            if isinstance(temp_c, int) and isinstance(fan_pct, int) and isinstance(mode, str):
-                self._state.record_poll(TempC(temp_c), FanPercent(fan_pct), OperatingMode(mode))
+            if isinstance(temp_c, int) and isinstance(mode, str):
+                pct: FanPercent | None = FanPercent(fan_pct) if isinstance(fan_pct, int) else None
+                self._state.record_poll(TempC(temp_c), pct, OperatingMode(mode))
 
 
 def _install_signal_handlers(
@@ -103,14 +111,16 @@ def _install_signal_handlers(
 @app.command()
 def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
-    metrics_port: Annotated[int | None, typer.Option("--metrics-port")] = None,
-    verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
+    metrics_port: Annotated[
+        int | None, typer.Option("--metrics-port", help="Loopback port for the metrics endpoint")
+    ] = None,
+    verbose: Annotated[
+        bool, typer.Option("-v", "--verbose", help="Plain-text debug logging instead of JSON")
+    ] = False,
 ) -> None:
+    """Run the control loop until SIGINT/SIGTERM; SIGHUP hot-reloads the config."""
     setup_logging(verbose)
-    try:
-        settings = load_settings(config)
-    except ConfigError as err:
-        _fail(err, code=2)
+    settings = _load_settings_or_fail(config)
     watcher = ConfigWatcher(config)
 
     port = metrics_port if metrics_port is not None else settings.metrics_port
@@ -120,9 +130,9 @@ def run(
         state = MetricsState()
         server = start_metrics_server(port, state)
 
-    client = deps.build_client(settings)
     sink = _MetricsSink(LoggingEventSink(), state)
-    controller = Controller(client, client, settings, sink)
+    current_settings = settings
+    controller = None
 
     stop_event = threading.Event()
     reload_requested = threading.Event()
@@ -130,7 +140,9 @@ def run(
 
     sink.emit(EventType.STARTUP)
     try:
-        while not deps.sleep_interruptible(stop_event, settings.poll_interval_s):
+        client = deps.build_client(current_settings)
+        controller = Controller(client, client, current_settings, sink)
+        while not deps.sleep_interruptible(stop_event, current_settings.poll_interval_s):
             controller.tick()
             if reload_requested.is_set():
                 reload_requested.clear()
@@ -141,9 +153,11 @@ def run(
                         sink.emit(EventType.CONFIG_ERROR, error=str(err))
                     else:
                         if controller.replace_settings(new_settings):
+                            current_settings = new_settings
                             sink.emit(EventType.CONFIG_RELOAD)
     finally:
-        controller.shutdown()
+        if controller is not None:
+            controller.shutdown()
         if server is not None:
             server.shutdown()
         sink.emit(EventType.SHUTDOWN)
@@ -154,16 +168,15 @@ def set_speed(
     pct: Annotated[int, typer.Argument()],
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
 ) -> None:
+    """Set a fixed manual fan percentage (1-100) until the next mode change."""
     if not 1 <= pct <= 100:
         err = ValueError(f"PCT must be in 1..100, got {pct}")
         _fail(err, code=2)
     try:
-        settings = load_settings(config)
+        settings = _load_settings_or_fail(config)
         client = deps.build_client(settings)
         client.disable_auto()
         client.set_manual_pct(make_fan_pct(pct))
-    except ConfigError as err:
-        _fail(err, code=2)
     except IpmiError as err:
         _fail(err, code=1)
     print(json.dumps({"event": "speed_change", "fan_pct": pct}))
@@ -173,12 +186,11 @@ def set_speed(
 def auto(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
 ) -> None:
+    """Hand fan control back to the iDRAC's automatic policy."""
     try:
-        settings = load_settings(config)
+        settings = _load_settings_or_fail(config)
         client = deps.build_client(settings)
         client.enable_auto()
-    except ConfigError as err:
-        _fail(err, code=2)
     except IpmiError as err:
         _fail(err, code=1)
     print(json.dumps({"event": "mode_change", "to": "auto"}))
@@ -189,10 +201,8 @@ def status(
     config: Annotated[Path, typer.Option("--config")] = Path("breezed.toml"),
     verbose: Annotated[bool, typer.Option("--verbose")] = False,
 ) -> None:
-    try:
-        settings = load_settings(config)
-    except ConfigError as err:
-        _fail(err, code=2)
+    """Print one-shot sensor status as JSON (human-readable with --verbose)."""
+    settings = _load_settings_or_fail(config)
     try:
         client = deps.build_client(settings)
         temp = client.read_max_cpu_temp()
@@ -215,8 +225,11 @@ def status(
 @app.command()
 def validate(
     path: Annotated[Path, typer.Argument()],
-    probe: Annotated[bool, typer.Option("--probe")] = False,
+    probe: Annotated[
+        bool, typer.Option("--probe", help="Also read a live temperature from the iDRAC")
+    ] = False,
 ) -> None:
+    """Validate a config file and print a JSON summary; --probe adds a live read."""
     try:
         settings = load_settings(path)
     except ConfigError as err:
