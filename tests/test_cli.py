@@ -7,6 +7,7 @@ the previous handlers afterwards.
 
 import json
 import os
+import re
 import signal
 import threading
 from collections.abc import Callable
@@ -196,6 +197,9 @@ def log_events(output: str) -> list[dict[str, object]]:
     return events
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def test_help_lists_all_five_commands(runner: CliRunner):
     combined = ""
     for argv in (
@@ -206,7 +210,7 @@ def test_help_lists_all_five_commands(runner: CliRunner):
     ):
         result = runner.invoke(app, argv, catch_exceptions=False)
         assert result.exit_code == 0
-        combined += result.output
+        combined += ANSI_RE.sub("", result.output)
     for name in ("run", "set", "auto", "status", "validate"):
         assert name in combined
     for flag in ("--config", "-c", "--metrics-port", "--verbose", "--probe"):
