@@ -13,8 +13,8 @@ from typing import Any, TypeIs
 
 from breezed.curve import CurvePoint, validate_curve
 from breezed.types import (
-    Celsius,
     DomainError,
+    TempC,
     make_fan_pct,
     make_positive_int,
 )
@@ -28,10 +28,10 @@ class ConfigError(DomainError):
 
 
 DEFAULT_CURVE: tuple[CurvePoint, ...] = (
-    CurvePoint(temp_c=Celsius(45), fan_pct=make_fan_pct(6)),
-    CurvePoint(temp_c=Celsius(60), fan_pct=make_fan_pct(8)),
-    CurvePoint(temp_c=Celsius(68), fan_pct=make_fan_pct(12)),
-    CurvePoint(temp_c=Celsius(74), fan_pct=make_fan_pct(18)),
+    CurvePoint(temp_c=TempC(45), fan_pct=make_fan_pct(6)),
+    CurvePoint(temp_c=TempC(60), fan_pct=make_fan_pct(8)),
+    CurvePoint(temp_c=TempC(68), fan_pct=make_fan_pct(12)),
+    CurvePoint(temp_c=TempC(74), fan_pct=make_fan_pct(18)),
 )
 
 
@@ -84,7 +84,7 @@ def _require_int(table: dict[str, Any], key: str) -> int | None:
     return value
 
 
-def _positive_or_default(table: dict[str, Any], key: str, default: int) -> int:
+def _positive_or_default(table: dict[str, Any], key: str, default: int | None) -> int | None:
     raw = _require_int(table, key)
     if raw is None:
         return default
@@ -94,21 +94,15 @@ def _positive_or_default(table: dict[str, Any], key: str, default: int) -> int:
         raise ConfigError(str(exc)) from exc
 
 
-def _metrics_port(table: dict[str, Any]) -> int | None:
-    raw = _require_int(table, "metrics_port")
-    if raw is None:
-        return None
-    try:
-        return make_positive_int("metrics_port", raw)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
-
-
 def _secret(table: dict[str, Any], key: str, env_key: str) -> str | None:
+    """Env wins over file; an empty env value counts as unset, same as absent."""
     env_value = os.environ.get(env_key)
     if env_value:
         return env_value
-    return _require_str(table, key)
+    file_value = _require_str(table, key)
+    if file_value:
+        return file_value
+    return None
 
 
 def _identity(settings_table: dict[str, Any]) -> tuple[str, str]:
@@ -141,7 +135,7 @@ def _curve_row(index: int, row: dict[str, Any]) -> CurvePoint:
     except ValueError as exc:
         msg = f"curve[{index}].{exc}"
         raise ConfigError(msg) from exc
-    return CurvePoint(temp_c=Celsius(temp_raw), fan_pct=fan_pct)
+    return CurvePoint(temp_c=TempC(temp_raw), fan_pct=fan_pct)
 
 
 def _curve(data: dict[str, Any]) -> tuple[CurvePoint, ...]:
@@ -157,7 +151,7 @@ def _curve(data: dict[str, Any]) -> tuple[CurvePoint, ...]:
     try:
         return validate_curve(points)
     except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
+        raise ConfigError(f"curve: {exc}") from exc
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -179,18 +173,25 @@ def load_settings(path: str | Path) -> Settings:
     settings_table = _require_table(data, "settings")
     host, user = _identity(settings_table)
     password = _secret(settings_table, "password", "IDRAC_PASSWORD") or ""
-    ipmitool_path = _require_str(settings_table, "ipmitool_path") or "/usr/bin/ipmitool"
-    return Settings(
-        host=host,
-        user=user,
-        password=password,
-        curve=_curve(data),
-        poll_interval_s=_positive_or_default(settings_table, "poll_interval_s", 10),
-        read_failure_limit=_positive_or_default(settings_table, "read_failure_limit", 3),
-        step_down_hysteresis_s=_positive_or_default(settings_table, "step_down_hysteresis_s", 30),
-        metrics_port=_metrics_port(settings_table),
-        ipmitool_path=ipmitool_path,
-    )
+    settings_kwargs: dict[str, Any] = {
+        "host": host,
+        "user": user,
+        "password": password,
+        "curve": _curve(data),
+    }
+    for key, default in (
+        ("poll_interval_s", 10),
+        ("read_failure_limit", 3),
+        ("step_down_hysteresis_s", 30),
+        ("metrics_port", None),
+    ):
+        value = _positive_or_default(settings_table, key, default)
+        if value is not None:
+            settings_kwargs[key] = value
+    ipmitool_path = _require_str(settings_table, "ipmitool_path")
+    if ipmitool_path:
+        settings_kwargs["ipmitool_path"] = ipmitool_path
+    return Settings(**settings_kwargs)
 
 
 class ConfigWatcher:
@@ -198,7 +199,11 @@ class ConfigWatcher:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        self._mtime_ns = self._path.stat().st_mtime_ns
+        try:
+            self._mtime_ns = self._path.stat().st_mtime_ns
+        except OSError as exc:
+            msg = f"config: cannot read {path}: {exc}"
+            raise ConfigError(msg) from exc
 
     def changed(self) -> bool:
         try:
@@ -207,6 +212,10 @@ class ConfigWatcher:
             return True
 
     def reload(self) -> Settings:
+        # Stat before load so the recorded mtime never describes a version newer
+        # than what was parsed: a write racing the load leaves the file's mtime
+        # ahead of _mtime_ns, and changed() schedules another reload (the TOCTOU
+        # gap is benign by construction, not eliminated).
         try:
             mtime_ns = self._path.stat().st_mtime_ns
         except OSError:
