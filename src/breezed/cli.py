@@ -36,19 +36,7 @@ class AppDeps:
     sleep_interruptible: Callable[[threading.Event, float], bool]
 
 
-def _default_build_client(settings: Settings) -> IpmiClient:
-    return IpmiClient(settings)
-
-
-def _default_sleep(stop_event: threading.Event, timeout: float) -> bool:
-    return stop_event.wait(timeout)
-
-
-def _default_deps() -> AppDeps:
-    return AppDeps(build_client=_default_build_client, sleep_interruptible=_default_sleep)
-
-
-deps: AppDeps = _default_deps()
+deps = AppDeps(build_client=IpmiClient, sleep_interruptible=threading.Event.wait)
 
 __all__ = ["app", "deps"]
 
@@ -63,6 +51,14 @@ def _load_settings_or_fail(config: Path) -> Settings:
         return load_settings(config)
     except ConfigError as err:
         _fail(err, code=2)
+
+
+def _connect(config: Path) -> tuple[Settings, IpmiClient]:
+    try:
+        settings = _load_settings_or_fail(config)
+        return settings, deps.build_client(settings)
+    except IpmiError as err:
+        _fail(err, code=1)
 
 
 class _MetricsSink:
@@ -172,9 +168,8 @@ def set_speed(
     if not 1 <= pct <= 100:
         err = ValueError(f"PCT must be in 1..100, got {pct}")
         _fail(err, code=2)
+    _, client = _connect(config)
     try:
-        settings = _load_settings_or_fail(config)
-        client = deps.build_client(settings)
         client.disable_auto()
         client.set_manual_pct(make_fan_pct(pct))
     except IpmiError as err:
@@ -187,9 +182,8 @@ def auto(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
 ) -> None:
     """Hand fan control back to the iDRAC's automatic policy."""
+    _, client = _connect(config)
     try:
-        settings = _load_settings_or_fail(config)
-        client = deps.build_client(settings)
         client.enable_auto()
     except IpmiError as err:
         _fail(err, code=1)
@@ -202,9 +196,8 @@ def status(
     verbose: Annotated[bool, typer.Option("--verbose")] = False,
 ) -> None:
     """Print one-shot sensor status as JSON (human-readable with --verbose)."""
-    settings = _load_settings_or_fail(config)
+    settings, client = _connect(config)
     try:
-        client = deps.build_client(settings)
         temp = client.read_max_cpu_temp()
         rpms = client.read_fan_rpms()
     except IpmiError as err:
