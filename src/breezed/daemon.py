@@ -1,7 +1,7 @@
 """Idempotent systemd deployment: install, status, and uninstall of the unit.
 
 Every filesystem effect goes through the injected ``FileOps`` seam; every
-process invocation goes through the injected ``SystemdRunner``. Re-running
+process invocation goes through the injected ``CommandRunner``. Re-running
 ``install()`` is the upgrade mechanism: it always re-renders and overwrites
 the unit but never touches an existing env file or config.
 """
@@ -89,11 +89,12 @@ class RealFileOps:
         path.unlink()
 
 
-SystemdRunner = Callable[[list[str]], str]
+CommandRunner = Callable[[list[str]], str]
+"""Runs systemctl and useradd invocations; returns stdout, raises DaemonError on failure."""
 
 
 def _run_systemctl(argv: list[str]) -> str:
-    """Default SystemdRunner: thin wrapper around subprocess.run (sanctioned site).
+    """Default CommandRunner: thin wrapper around subprocess.run (sanctioned site).
 
     Executes ``argv`` verbatim and returns stdout; raises ``DaemonError`` on a
     non-zero exit (expected for ``is-active``/``is-enabled`` probes — callers
@@ -163,7 +164,7 @@ class DaemonInstaller:
         self,
         paths: InstallerPaths = _default_paths,
         *,
-        runner: SystemdRunner = _run_systemctl,
+        runner: CommandRunner = _run_systemctl,
         fs: FileOps = _default_fs,
         user_lookup: UserLookup = _user_exists,
         exec_path: str | None = None,
@@ -173,7 +174,9 @@ class DaemonInstaller:
         self._run = runner
         self._fs = fs
         self._user_exists = user_lookup
-        self._exec_path = exec_path or shutil.which(SERVICE_NAME) or sys.argv[0]
+        self._exec_path = (
+            exec_path or shutil.which(SERVICE_NAME) or str(Path(sys.argv[0]).resolve())
+        )
         self._require_root = require_root
 
     def install(self, *, start: bool = False) -> InstallReport:
@@ -226,7 +229,11 @@ class DaemonInstaller:
         unit_present = self._fs.stat(self._paths.unit_path) is not None
         unit_version: str | None = None
         if unit_present:
-            match = _UNIT_STAMP_RE.search(self._fs.read_text(self._paths.unit_path))
+            try:
+                unit_text = self._fs.read_text(self._paths.unit_path)
+            except OSError:
+                unit_text = ""
+            match = _UNIT_STAMP_RE.search(unit_text)
             if match is not None:
                 unit_version = match.group(1)
         return DaemonStatus(
@@ -279,6 +286,6 @@ __all__ = [
     "InstallReport",
     "InstallerPaths",
     "RealFileOps",
-    "SystemdRunner",
+    "CommandRunner",
     "UserLookup",
 ]
