@@ -197,9 +197,30 @@ def test_daemon_install_prints_json_then_commands(cli_runner: CliRunner, tmp_pat
             str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
         ],
     }
-    assert "Review, then run these commands" in result.output
+    headings = (
+        "1. Install or upgrade the system runtime with uv:",
+        "2. Install systemd files (skip existing config/secrets):",
+        "3. Enable and verify:",
+    )
+    assert all(heading in result.output for heading in headings)
+    assert [result.output.index(heading) for heading in headings] == sorted(
+        result.output.index(heading) for heading in headings
+    )
     output_lines = {line.strip() for line in result.output.splitlines()}
     assert set(install_commands()) <= output_lines
+
+
+def test_daemon_install_warns_when_run_as_root(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+
+    result = cli_runner.invoke(app, ["daemon", "install", "--staging-dir", str(tmp_path / "stage")])
+
+    assert result.exit_code == 0
+    assert (
+        "Run this staging command without sudo; it does not modify system paths." in result.stderr
+    )
 
 
 def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner) -> None:

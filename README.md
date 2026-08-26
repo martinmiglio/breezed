@@ -13,13 +13,16 @@ behind small Protocols, so either can be swapped without touching the core.
 
 ## Install
 
+From a checkout, stage the systemd files and print the installation plan:
+
 ```sh
-uv tool install .
-breezed validate /etc/breezed/breezed.toml --probe   # reads one live temp, touches no fans
+uv run breezed daemon install
+# review, then paste the printed sudo commands in order
 ```
 
-(`/etc/breezed/breezed.toml` is created by `daemon install`; before that,
-validate a local copy of the example.)
+This user-level `uv` only invokes breezed from the checkout. It is not copied
+into the system installation and is not a service dependency; the printed uv
+command installs and manages the system runtime under `/opt`.
 
 ## CLI examples
 
@@ -34,7 +37,7 @@ breezed validate breezed.toml --probe               # check config; probe reads 
 The `daemon` subcommands manage the systemd deployment:
 
 ```sh
-breezed daemon install                # stage unit+env+config to /tmp, print install commands
+uv run breezed daemon install         # stage unit+env+config to /tmp, print install commands
 breezed daemon status                 # report unit state and binary version
 breezed daemon uninstall              # print removal commands; keep env/config
 ```
@@ -51,13 +54,16 @@ bash/zsh/fish-safe block for review. uv installs and manages the runtime directl
 under `/opt`:
 
 ```sh
-uv tool install .
-breezed daemon install
+uv run breezed daemon install
 # review, then paste the printed commands in order
 # skip the config/env install lines if those files are already configured
 sudoedit /etc/breezed.env
 journalctl -u breezed -f
 ```
+
+Never run `sudo breezed daemon install`: staging is unprivileged and does not
+modify system paths. Use `sudo` only on the commands printed by the staging
+command.
 
 The printed uv command sets `UV_TOOL_DIR=/opt/breezed`,
 `UV_TOOL_BIN_DIR=/usr/local/bin`, and
@@ -74,7 +80,7 @@ The config and environment install lines are for first installation only. Skip
 them when the files are already tuned or configured, including on every upgrade,
 because `install` would overwrite them.
 
-**Upgrading**: update the checkout, run `breezed daemon install`, and re-paste
+**Upgrading**: update the checkout, run `uv run breezed daemon install`, and re-paste
 the printed commands. The uv `tool install --reinstall` command replaces the
 runtime in `/opt`; skip the config and environment install lines to retain local
 settings. The system-user command can also be skipped after first installation.

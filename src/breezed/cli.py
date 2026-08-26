@@ -8,6 +8,7 @@ reserved for JSON/machine output. Kept free of module-level side effects beyond
 
 import json
 import logging
+import os
 import signal
 import threading
 from collections.abc import Callable
@@ -307,12 +308,24 @@ def daemon_install(
     ] = STAGING_DIR,
 ) -> None:
     """Stage unit + env + config into a temp dir; print the privileged commands."""
+    if os.geteuid() == 0:
+        typer.secho(
+            "Run this staging command without sudo; it does not modify system paths.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
     try:
         files = stage_files(staging_dir)
     except DaemonError as err:
         _fail(err, code=1)
     print(json.dumps({"event": "install_staged", "files": files}))
-    _print_command_block(install_commands(), "Review, then run these commands to install:")
+    commands = install_commands()
+    _print_command_block(commands[1:2], "1. Install or upgrade the system runtime with uv:")
+    _print_command_block(
+        [commands[0], *commands[2:6]],
+        "2. Install systemd files (skip existing config/secrets):",
+    )
+    _print_command_block(commands[6:], "3. Enable and verify:")
 
 
 @daemon_app.command("status")
