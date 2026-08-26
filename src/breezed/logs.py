@@ -1,14 +1,16 @@
 """Structured JSON logging, the EventSink adapter, and logging setup.
 
-Logs are the machine output (SPEC locked decision): one JSON object per line on
-stdout by default, plain human format under --verbose. The event vocabulary is
-T2's EventType enum; ty rejects unknown names at every emit site.
+Logs are the machine output: one JSON object per line on stdout by default,
+rich-formatted human output under --verbose. The event vocabulary is the
+EventType enum; ty rejects unknown names at every emit site.
 """
 
 import json
 import logging
 import sys
 from datetime import UTC, datetime
+
+from rich.logging import RichHandler
 
 from breezed.types import EventType
 
@@ -46,7 +48,7 @@ class JsonLogFormatter(logging.Formatter):
 
 
 class LoggingEventSink:
-    """Structurally satisfies T5's EventSink Protocol; no runtime name guard."""
+    """Structurally satisfies the EventSink Protocol; no runtime name guard."""
 
     def __init__(self, logger: logging.Logger | None = None) -> None:
         self._log = logger if logger is not None else logging.getLogger("breezed")
@@ -58,20 +60,21 @@ class LoggingEventSink:
 def setup_logging(verbose: bool) -> None:
     """Idempotent; root 'breezed' logger -> one StreamHandler(sys.stdout).
 
-    verbose=False -> INFO + JsonLogFormatter; True -> DEBUG +
-    Formatter("%(asctime)s %(levelname)s %(message)s"). Never basicConfig().
+    verbose=False -> INFO + JsonLogFormatter (byte-stable machine output, rich
+    must never touch this path); True -> DEBUG + RichHandler for colors and
+    readable formatting. Never basicConfig().
     """
     logger = logging.getLogger("breezed")
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
-    handler = logging.StreamHandler(sys.stdout)
     if verbose:
         logger.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    else:
-        logger.setLevel(logging.INFO)
-        handler.setFormatter(JsonLogFormatter())
-        handler.terminator = ""
+        logger.addHandler(RichHandler(rich_tracebacks=True, show_path=False))
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    logger.setLevel(logging.INFO)
+    handler.setFormatter(JsonLogFormatter())
+    handler.terminator = ""
     logger.addHandler(handler)
 
 
