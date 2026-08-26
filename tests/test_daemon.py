@@ -1,20 +1,14 @@
-"""T9 daemon deploy tests: pure script rendering + unprivileged status only.
+"""Daemon deploy tests: staging, install command planning, and unprivileged status.
 
-render_* functions are exercised directly (no execution seams involved);
-generated scripts are validated with `sh -n` and executed against sandboxed
-BREEZED_INSTALL_ROOT trees. CLI daemon commands are exercised by monkeypatching
-the module-level renderers.
+stage_install is exercised directly (real copytree + relocation + smoke test
+into tmp_path); CLI daemon commands are exercised via CliRunner with staging
+dirs injected through --staging-dir.
 """
 
-import getpass
 import json
 import os
-import re
-import stat
 import subprocess
 import sys
-import tempfile
-from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -25,12 +19,14 @@ from breezed import cli
 from breezed.cli import app
 from breezed.daemon import (
     EXEC_PATH,
+    FINAL_BASE_PYTHON,
+    FINAL_RUNTIME,
     DaemonError,
     DaemonStatus,
     InstallerPaths,
     daemon_status,
-    render_install_script,
-    render_uninstall_script,
+    stage_install,
+    staged_uninstall_commands,
 )
 
 UNIT_NAME = "breezed.service"
@@ -134,317 +130,83 @@ def test_status_probe_failure_reports_inactive(paths: InstallerPaths):
     assert status.active is False
 
 
-@pytest.mark.parametrize("start", [True, False])
-def test_render_install_script_is_valid_posix_sh(start: bool):
-    script = render_install_script(start=start)
-    completed = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_render_uninstall_script_is_valid_posix_sh():
-    script = render_uninstall_script()
-    completed = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_generation_refused_when_running_from_deployed_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    sandbox = tmp_path / "sandbox"
-    (sandbox / "opt").mkdir(parents=True)
-    (sandbox / "opt" / "breezed").symlink_to(Path(sys.prefix).resolve(), target_is_directory=True)
-    monkeypatch.setenv("BREEZED_INSTALL_ROOT", str(sandbox))
-    with pytest.raises(DaemonError, match="deployed runtime"):
-        render_install_script(start=False)
-    with pytest.raises(DaemonError, match="deployed runtime"):
-        render_uninstall_script()
-
-
-def test_generation_allowed_for_development_prefix(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("BREEZED_INSTALL_ROOT", str(Path(sys.prefix) / "nowhere-near-opt"))
-    render_install_script(start=False)
-
-
-def test_install_script_contains_self_copy_guard():
-    script = render_install_script(start=False)
-    assert "refusing to copy the deployed runtime onto itself" in script
-    assert 'for deployed in "$ROOT/opt/breezed" "$ROOT/opt/breezed-python"' in script
-    assert "source runtime not found" in script
-
-
-def test_install_script_self_copy_guard_triggers_in_sandbox(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    root = tmp_path / "sandbox"
-    (root / "opt").mkdir(parents=True)
-    (root / "opt" / "breezed").symlink_to(Path(sys.prefix).resolve(), target_is_directory=True)
-    script_path = tmp_path / "install.sh"
-    script_path.write_text(render_install_script(start=False))
-
-    result = _run_script(script_path, root)
-
-    assert result.returncode == 1
-    assert "refusing to copy the deployed runtime onto itself" in result.stderr
-    assert not (root / "etc").exists()
-
-
-def test_install_script_is_prefixed_and_documents_root_override():
-    script = render_install_script(start=False)
-    assert script.startswith("#!/bin/sh")
-    assert "POSIX sh + GNU coreutils" in script
-    assert "BREEZED_INSTALL_ROOT" in script
-    assert "[breezed-install] done" in script
-
-
-def test_install_script_root_check_names_exact_rerun_command():
-    script = render_install_script(start=False)
-    assert "root privileges are required" in script
-    assert "sudo sh $0" in script
-
-
-def test_start_flag_controls_enable_now_line():
-    started = render_install_script(start=True)
-    stopped = render_install_script(start=False)
-    assert "systemctl enable --now breezed" in started
-    assert "systemctl enable --now" not in stopped
-    assert "systemctl daemon-reload" in started and "systemctl daemon-reload" in stopped
-
-
-def test_fresh_env_with_start_warns_unit_will_fail_until_secrets_set():
-    script = render_install_script(start=True)
-    note_pos = script.find("the unit will fail until secrets are set")
-    fill_pos = script.find("secrets are EMPTY")
-    assert note_pos != -1 and fill_pos != -1 and note_pos < fill_pos
-
-
-def test_uninstall_script_sandbox_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    root = tmp_path / "sandbox"
-    unit = root / "etc" / "systemd" / "system" / UNIT_NAME
-    shim = root / "usr" / "local" / "bin" / "breezed"
-    env_file = root / "etc" / "breezed.env"
-    config = root / "etc" / "breezed" / "breezed.toml"
-    for target in (unit, shim, env_file, config):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("# placeholder\n")
-
-    script_path = tmp_path / "uninstall.sh"
-    script_path.write_text(render_uninstall_script())
-
-    result = _run_script(script_path, root)
-
-    assert result.returncode == 0, result.stderr
-    assert not unit.exists()
-    assert not shim.exists()
-    assert env_file.exists() and config.exists()
-
-
-def test_rendered_unit_uses_fixed_exec_path_and_no_home_paths():
-    script = render_install_script(start=False)
-    assert f"ExecStart={EXEC_PATH} run --config /etc/breezed/breezed.toml" in script
-    unit = script.split("<<'BREEZED_UNIT_EOF'\n", 1)[1].split("\nBREEZED_UNIT_EOF\n", 1)[0]
-    assert "/home" not in unit
-    assert "/usr/local/bin/breezed" in unit
-
-
-def test_rendered_unit_drops_thread_blocking_directives_keeps_rest():
-    script = render_install_script(start=False)
-    assert "MemoryDenyWriteExecute=yes" not in script
-    assert "RestrictNamespaces=yes" not in script
-    for directive in (
-        "NoNewPrivileges=yes",
-        "ProtectSystem=strict",
-        "ProtectHome=yes",
-        "PrivateTmp=yes",
-        "PrivateDevices=yes",
-        "ProtectKernelTunables=yes",
-        "ProtectKernelModules=yes",
-        "ProtectControlGroups=yes",
-        "LockPersonality=yes",
-        "RestrictSUIDSGID=yes",
-        "CapabilityBoundingSet=",
-        "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
-    ):
-        assert directive in script
-
-
-def _write_stubs(directory: Path, names: tuple[str, ...]) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    for name in names:
-        stub = directory / name
-        stub.write_text("#!/bin/sh\nexit 0\n")
-        stub.chmod(0o755)
-    return directory
-
-
-def _run_script(
-    script_path: Path,
-    root: Path,
-    extra_env: dict[str, str] | None = None,
-    stubs: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    path_value = f"{stubs}:{os.environ['PATH']}" if stubs is not None else os.environ["PATH"]
-    env = {
-        "PATH": path_value,
-        "BREEZED_INSTALL_ROOT": str(root),
-        **(extra_env or {}),
-    }
-    return subprocess.run(
-        ["sh", str(script_path)], capture_output=True, text=True, env=env, timeout=300
-    )
-
-
-def test_install_script_double_run_is_idempotent_in_sandbox(tmp_path: Path):
-    root = tmp_path / "sandbox"
-    stubs = _write_stubs(tmp_path / "stubs", ("useradd",))
-    script_path = tmp_path / "install.sh"
-    script_path.write_text(render_install_script(start=True))
-    sudo_user = getpass.getuser()
-
-    first = _run_script(script_path, root, {"SUDO_USER": sudo_user}, stubs)
-    assert first.returncode == 0, first.stderr
-
-    env_file = root / "etc" / "breezed.env"
-    config_file = root / "etc" / "breezed" / "breezed.toml"
-    unit_file = root / "etc" / "systemd" / "system" / UNIT_NAME
-    shim = root / "usr" / "local" / "bin" / "breezed"
-    env_before, config_before = env_file.read_bytes(), config_file.read_bytes()
-    example = resources.files("breezed").joinpath("templates").joinpath("breezed.toml.example")
-    assert config_file.read_bytes().rstrip(b"\n") == example.read_bytes().rstrip(b"\n")
-    assert stat.S_IMODE(config_file.stat().st_mode) == 0o664
-    assert config_file.stat().st_uid == os.getuid()
-    assert f"config owner: {sudo_user} (0664)" in first.stdout
-
-    second = _run_script(script_path, root, {"SUDO_USER": sudo_user}, stubs)
-
-    assert second.returncode == 0, second.stderr
-    assert env_file.read_bytes() == env_before
-    assert config_file.read_bytes() == config_before
-    assert stat.S_IMODE(config_file.stat().st_mode) == 0o664
-    assert config_file.stat().st_uid == os.getuid()
-    assert unit_file.is_file()
-    assert shim.is_symlink()
-    assert (root / "opt" / "breezed.old").is_dir()
-    assert "secrets are EMPTY — fill them:" in first.stdout
-    assert "sudoedit" in first.stdout
-    assert "[breezed-install]   sudo systemctl restart breezed" in first.stdout
-    assert first.stdout.strip().splitlines()[-1] == (
-        "[breezed-install] done — systemctl status breezed"
-    )
-    assert "secrets are EMPTY" not in second.stdout
-    assert "runtime updated — restart to pick it up:" in second.stdout
-    assert "[breezed-install]   sudo systemctl restart breezed" in second.stdout
-    assert second.stdout.strip().splitlines()[-1] == (
-        "[breezed-install] done — systemctl status breezed"
-    )
-    assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
-
-
-def test_install_script_config_owner_override(tmp_path: Path):
-    root = tmp_path / "sandbox"
-    stubs = _write_stubs(tmp_path / "stubs", ("useradd",))
-    script_path = tmp_path / "install.sh"
-    script_path.write_text(render_install_script(start=False))
-
-    result = _run_script(
-        script_path,
-        root,
-        {"BREEZED_CONFIG_OWNER": getpass.getuser(), "SUDO_USER": "someone-else"},
-        stubs,
-    )
-
-    assert result.returncode == 0, result.stderr
-    config_file = root / "etc" / "breezed" / "breezed.toml"
-    assert stat.S_IMODE(config_file.stat().st_mode) == 0o664
-    assert config_file.stat().st_uid == os.getuid()
-    assert f"config owner: {getpass.getuser()} (0664)" in result.stdout
-
-
-def test_install_script_contains_shebang_relocation_loop():
-    script = render_install_script(start=False)
-    assert 'sed -i "1s|.*|#!${ROOT}/opt/breezed/bin/python3|" "$shim"' in script
-    assert '[breezed-install] relocated shebang: $shim"' in script
-    assert "home = ${ROOT}/opt/breezed-python/bin|" in script
-    assert 'cp -a "$BASE_DIR" "$ROOT/opt/breezed-python"' in script
-    assert "activate|activate.*" in script
-
-
-def test_install_script_rewrites_hostile_shebang_to_relocated_python(tmp_path: Path):
-    root = tmp_path / "sandbox"
-    stubs = _write_stubs(tmp_path / "stubs", ("useradd",))
-    script_path = tmp_path / "install.sh"
-    script_path.write_text(render_install_script(start=False))
-
-    result = _run_script(script_path, root, stubs=stubs)
-
-    assert result.returncode == 0, result.stderr
-    shim = root / "opt" / "breezed" / "bin" / "breezed"
-    first_line = shim.read_text().splitlines()[0]
-    assert first_line == f"#!{root}/opt/breezed/bin/python3"
-    python_bin = root / "opt" / "breezed" / "bin" / "python3"
-    assert python_bin.is_file() and not python_bin.is_symlink()
-    pyvenv = (root / "opt" / "breezed" / "pyvenv.cfg").read_text()
-    assert f"home = {root}/opt/breezed-python/bin" in pyvenv
-    assert "relocated shebang:" in result.stdout
-
-
-def test_install_script_preserves_pre_existing_env_secrets(tmp_path: Path):
-    root = tmp_path / "sandbox"
-    secret_env = b"IDRAC_HOST=10.0.0.9\nIDRAC_USER=admin\nIDRAC_PASSWORD=hunter2\n"
-    (root / "etc").mkdir(parents=True)
-    (root / "etc" / "breezed.env").write_bytes(secret_env)
-    stubs = _write_stubs(tmp_path / "stubs", ("useradd",))
-    script_path = tmp_path / "install.sh"
-    script_path.write_text(render_install_script(start=False))
-
-    result = _run_script(script_path, root, stubs=stubs)
-
-    assert result.returncode == 0, result.stderr
-    assert (root / "etc" / "breezed.env").read_bytes() == secret_env
-    assert "keeping existing" in result.stdout
-    assert "secrets are EMPTY" not in result.stdout
-    assert "runtime updated — restart to pick it up:" in result.stdout
-    assert "[breezed-install]   sudo systemctl restart breezed" in result.stdout
-
-
-def test_daemon_install_runs_unprivileged_writing_only_its_script(
-    tmp_path: Path,
-):
-    output_path = tmp_path / "install.sh"
-    result = CliRunner().invoke(
-        app,
-        ["daemon", "install", "--output", str(output_path)],
-        catch_exceptions=False,
-    )
-    assert result.exit_code == 0
-    assert result.stderr.count("sudo sh") == 1
-
-
-class _RendererState:
-    def __init__(self) -> None:
-        self.install_script = "#!/bin/sh\nexit 0\n"
-        self.uninstall_script = "#!/bin/sh\nexit 0\n"
-        self.error: DaemonError | None = None
-        self.start_arg: bool | None = None
-
-
 @pytest.fixture
-def patch_renderers(monkeypatch: pytest.MonkeyPatch) -> _RendererState:
-    state = _RendererState()
+def staging(tmp_path: Path) -> Path:
+    return tmp_path / "stage"
 
-    def fake_install(*, start: bool) -> str:
-        state.start_arg = start
-        if state.error is not None:
-            raise state.error
-        return state.install_script
 
-    def fake_uninstall() -> str:
-        if state.error is not None:
-            raise state.error
-        return state.uninstall_script
+def test_stage_install_stages_unit_env_config_and_runtime(staging: Path):
+    stage_install(staging)
 
-    monkeypatch.setattr(cli, "render_install_script", fake_install)
-    monkeypatch.setattr(cli, "render_uninstall_script", fake_uninstall)
-    return state
+    assert (
+        (staging / "breezed.service")
+        .read_text(encoding="utf-8")
+        .startswith("# Installed by breezed")
+    )
+    assert "IDRAC_HOST=" in (staging / "breezed.env").read_text(encoding="utf-8")
+    assert "[settings]" in (staging / "breezed.toml").read_text(encoding="utf-8")
+    assert (staging / "runtime" / "bin" / "breezed").exists()
+    assert (staging / "runtime-python" / "bin").is_dir()
+
+
+def test_stage_install_relocates_to_final_opt_paths(staging: Path):
+    stage_install(staging)
+
+    cfg = (staging / "runtime" / "pyvenv.cfg").read_text(encoding="utf-8")
+    assert f"home = {FINAL_BASE_PYTHON}/bin" in cfg
+    shebang = (staging / "runtime" / "bin" / "breezed").read_text(encoding="utf-8").splitlines()[0]
+    assert shebang == f"#!{FINAL_RUNTIME}/bin/python3"
+    python_link = staging / "runtime" / "bin" / "python3"
+    if python_link.is_symlink():
+        assert os.readlink(python_link).startswith(f"{FINAL_BASE_PYTHON}/bin/")
+
+
+def test_staged_runtime_works_standalone(staging: Path):
+    stage_install(staging)
+
+    probe = subprocess.run(
+        [str(staging / "runtime" / "bin" / "breezed"), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert breezed.__version__ in probe.stdout
+
+
+def test_stage_install_returns_plain_copy_paste_commands(staging: Path):
+    staged = stage_install(staging)
+
+    joined = "\n".join(staged.commands)
+    for fragment in (
+        "useradd --system",
+        f"cp -a {staging}/runtime {FINAL_RUNTIME}",
+        f"ln -sfn {FINAL_RUNTIME}/bin/breezed {EXEC_PATH}",
+        "install -D",
+        "systemctl daemon-reload && sudo systemctl enable --now breezed",
+        "sudoedit /etc/breezed.env",
+    ):
+        assert fragment in joined
+    assert all(c.split()[0] in ("sudo", "sudoedit") for c in staged.commands)
+    assert staged.staged_files == [
+        str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
+    ]
+
+
+def test_stage_refused_when_running_from_deployed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(sys, "prefix", "/opt/breezed")
+    with pytest.raises(DaemonError, match="deployed runtime"):
+        stage_install(Path("/tmp/never-created-by-this-test"))
+
+
+def test_uninstall_commands_stop_remove_and_keep_state():
+    commands = staged_uninstall_commands()
+
+    assert any("systemctl disable --now breezed" in c for c in commands)
+    assert any("rm -f" in c and "breezed.service" in c and EXEC_PATH in c for c in commands)
+    assert any("daemon-reload" in c for c in commands)
 
 
 def test_help_lists_daemon_subcommands(cli_runner: CliRunner):
@@ -454,70 +216,43 @@ def test_help_lists_daemon_subcommands(cli_runner: CliRunner):
         assert name in result.output
 
 
-def test_daemon_install_writes_default_tempdir_script_mode_0644(cli_runner: CliRunner):
-    result = cli_runner.invoke(app, ["daemon", "install"], catch_exceptions=False)
+def test_daemon_install_stages_into_dir_and_prints_json_event(cli_runner: CliRunner, staging: Path):
+    result = cli_runner.invoke(
+        app, ["daemon", "install", "--staging-dir", str(staging)], catch_exceptions=False
+    )
     assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    path = Path(payload["script"])
-    try:
-        assert payload["start"] is False
-        assert path.parent == Path(tempfile.gettempdir())
-        assert re.fullmatch(r"breezed-install-[a-z0-9_]+\.sh", path.name)
-        assert path.read_text().startswith("#!/bin/sh")
-        assert stat.S_IMODE(path.stat().st_mode) == 0o644
-        assert f"sudo sh {path}" in result.stderr
-    finally:
-        path.unlink(missing_ok=True)
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["event"] == "install_staged"
+    assert payload["files"] == [
+        str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
+    ]
+    assert "sudo systemctl" in result.output
 
 
-def test_daemon_install_honors_output_and_start_flag(
-    cli_runner: CliRunner, tmp_path: Path, patch_renderers
+def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner):
+    result = cli_runner.invoke(app, ["daemon", "install", "--start"])
+    assert result.exit_code != 0
+
+
+def test_daemon_install_deployed_runtime_error_exits_1(
+    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ):
-    out = tmp_path / "custom.sh"
-    result = cli_runner.invoke(
-        app, ["daemon", "install", "--start", "--output", str(out)], catch_exceptions=False
-    )
-    assert result.exit_code == 0
-    assert patch_renderers.start_arg is True
-    assert out.read_text() == "#!/bin/sh\nexit 0\n"
-    assert json.loads(result.stdout) == {
-        "event": "install_script_written",
-        "script": str(out),
-        "start": True,
-    }
-    assert f"sudo sh {out}" in result.stderr
+    def boom(staging_dir: Path) -> object:
+        raise DaemonError("this is the deployed runtime (/opt/breezed)")
 
-
-def test_daemon_install_unwritable_output_exits_1(cli_runner: CliRunner, tmp_path: Path):
-    result = cli_runner.invoke(
-        app, ["daemon", "install", "--output", str(tmp_path / "missing-dir" / "x.sh")]
-    )
-    assert result.exit_code == 1
-    assert result.stdout.strip() == ""
-
-
-def test_daemon_install_deployed_runtime_error_exits_1(cli_runner: CliRunner, patch_renderers):
-    patch_renderers.error = DaemonError("this is the deployed runtime (/opt/breezed)")
+    monkeypatch.setattr(cli, "stage_install", boom)
     result = cli_runner.invoke(app, ["daemon", "install"])
     assert result.exit_code == 1
     assert "deployed runtime" in result.stderr
 
 
-def test_daemon_uninstall_writes_script_and_instruction(
-    cli_runner: CliRunner, tmp_path: Path, patch_renderers
-):
-    patch_renderers.uninstall_script = "#!/bin/sh\necho bye\n"
-    out = tmp_path / "bye.sh"
-    result = cli_runner.invoke(
-        app, ["daemon", "uninstall", "--output", str(out)], catch_exceptions=False
-    )
+def test_daemon_uninstall_prints_command_plan(cli_runner: CliRunner):
+    result = cli_runner.invoke(app, ["daemon", "uninstall"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert out.read_text() == "#!/bin/sh\necho bye\n"
-    assert json.loads(result.stdout) == {
-        "event": "uninstall_script_written",
-        "script": str(out),
-    }
-    assert f"sudo sh {out}" in result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["event"] == "uninstall_planned"
+    assert "/etc/breezed.env" in payload["keeps"]
+    assert "systemctl disable --now" in result.output
 
 
 def test_daemon_status_prints_report_json_exit_0(cli_runner: CliRunner, monkeypatch):

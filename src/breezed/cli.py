@@ -1,30 +1,34 @@
-"""Typer CLI: run/set/auto/status/validate plus the locked exit-code contract.
+"""Typer CLI: run/set/auto/status/validate plus the exit-code contract.
 
 0 ok, 1 runtime error (IpmiError), 2 usage/config error (ConfigError,
 out-of-range PCT). Errors go to stderr prefixed "breezed:"; stdout stays
 reserved for JSON/machine output. Kept free of module-level side effects beyond
-``app`` and ``deps`` so T8 can mount ``app.add_typer(...)`` later.
+``app`` and ``deps`` so daemon_app can mount via ``app.add_typer(...)``.
 """
 
 import json
+import logging
 import signal
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from traceback import format_exc
 from typing import Annotated, NoReturn
 
 import rich.console
 import typer
 
+from breezed import __version__
 from breezed.config import ConfigError, Settings, load_settings
 from breezed.controller import Controller, EventSink
 from breezed.curve import interpolate
 from breezed.daemon import (
+    STAGING_DIR,
     DaemonError,
     daemon_status,
-    render_install_script,
-    render_uninstall_script,
+    stage_install,
+    staged_uninstall_commands,
 )
 from breezed.ipmi import IpmiClient, IpmiError
 from breezed.logs import LoggingEventSink, setup_logging
@@ -46,6 +50,22 @@ class AppDeps:
 deps = AppDeps(build_client=IpmiClient, sleep_interruptible=threading.Event.wait)
 
 __all__ = ["app", "deps"]
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        print(f"breezed {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root_callback(
+    version: Annotated[
+        bool,
+        typer.Option("--version", callback=_print_version, is_eager=True, help="Show version."),
+    ] = False,
+) -> None:
+    """Curve-based fan controller for Dell PowerEdge servers via iDRAC/IPMI."""
 
 
 def _fail(err: Exception, *, code: int) -> NoReturn:
@@ -90,23 +110,15 @@ class _MetricsSink:
                 self._state.record_poll(TempC(temp_c), pct, OperatingMode(mode))
 
 
-def _install_signal_handlers(
-    stop_event: threading.Event, reload_requested: threading.Event
-) -> None:
+def _install_signal_handlers(stop_event: threading.Event) -> None:
     def stop(_signum: int, _frame: object) -> None:
         stop_event.set()
-
-    def reload(_signum: int, _frame: object) -> None:
-        reload_requested.set()
 
     try:
         if threading.current_thread() is not threading.main_thread():
             return
         signal.signal(signal.SIGINT, stop)
         signal.signal(signal.SIGTERM, stop)
-        sighup = getattr(signal, "SIGHUP", None)
-        if sighup is not None:
-            signal.signal(sighup, reload)
     except ValueError:
         pass
 
@@ -121,8 +133,26 @@ def run(
         bool, typer.Option("-v", "--verbose", help="Plain-text debug logging instead of JSON")
     ] = False,
 ) -> None:
-    """Run the control loop until SIGINT/SIGTERM; SIGHUP hot-reloads the config."""
+    """Run the control loop until SIGINT/SIGTERM."""
     setup_logging(verbose)
+    try:
+        _run_body(config, metrics_port)
+    except typer.Exit:
+        raise
+    except Exception as err:
+        logging.getLogger("breezed").error(
+            "fatal",
+            extra={
+                "event": "fatal",
+                "error": type(err).__name__,
+                "detail": str(err),
+                "traceback": format_exc(),
+            },
+        )
+        raise
+
+
+def _run_body(config: Path, metrics_port: int | None) -> None:
     settings = _load_settings_or_fail(config)
     watcher = ConfigWatcher(config)
 
@@ -138,8 +168,7 @@ def run(
     controller = None
 
     stop_event = threading.Event()
-    reload_requested = threading.Event()
-    _install_signal_handlers(stop_event, reload_requested)
+    _install_signal_handlers(stop_event)
 
     sink.emit(EventType.STARTUP)
     try:
@@ -147,17 +176,15 @@ def run(
         controller = Controller(client, client, current_settings, sink)
         while not deps.sleep_interruptible(stop_event, current_settings.poll_interval_s):
             controller.tick()
-            if reload_requested.is_set():
-                reload_requested.clear()
-                if watcher.changed():
-                    try:
-                        new_settings = watcher.reload()
-                    except ConfigError as err:
-                        sink.emit(EventType.CONFIG_ERROR, error=str(err))
-                    else:
-                        if controller.replace_settings(new_settings):
-                            current_settings = new_settings
-                            sink.emit(EventType.CONFIG_RELOAD)
+            if watcher.changed():
+                try:
+                    new_settings = watcher.reload()
+                except ConfigError as err:
+                    sink.emit(EventType.CONFIG_ERROR, error=str(err))
+                else:
+                    if controller.replace_settings(new_settings):
+                        current_settings = new_settings
+                        sink.emit(EventType.CONFIG_RELOAD)
     finally:
         if controller is not None:
             controller.shutdown()
@@ -265,18 +292,26 @@ def validate(
 daemon_app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 
-def _render_to_output(renderer: Callable[..., str], **kwargs: object) -> None:
-    try:
-        typer.secho(renderer(**kwargs), fg=typer.colors.CYAN)
-    except DaemonError as err:
-        _fail(err, code=1)
+def _print_command_block(commands: list[str], note: str) -> None:
+    console = rich.console.Console()
+    console.print(note, style="yellow")
+    for command in commands:
+        console.print(f"  {command}", style="bold cyan")
 
 
 @daemon_app.command("install")
 def daemon_install(
-    start: Annotated[bool, typer.Option("--start")] = False,
+    staging_dir: Annotated[
+        Path, typer.Option("--staging-dir", help="Where the staged files are written")
+    ] = STAGING_DIR,
 ) -> None:
-    _render_to_output(render_install_script, start=start)
+    """Stage runtime + unit + config into a temp dir; print the privileged commands."""
+    try:
+        staged = stage_install(staging_dir)
+    except DaemonError as err:
+        _fail(err, code=1)
+    _print_command_block(staged.commands, "Review, then run these commands to install:")
+    print(json.dumps({"event": "install_staged", "files": staged.staged_files}))
 
 
 @daemon_app.command("status")
@@ -290,7 +325,11 @@ def daemon_status_command() -> None:
 
 @daemon_app.command("uninstall")
 def daemon_uninstall() -> None:
-    _render_to_output(render_uninstall_script)
+    """Stop and remove the unit and shim; keeps the system user, env, and config."""
+    _print_command_block(
+        staged_uninstall_commands(), "Review, then run these commands to uninstall:"
+    )
+    print(json.dumps({"event": "uninstall_planned", "keeps": ["/etc/breezed.env", "/etc/breezed"]}))
 
 
 app.add_typer(daemon_app, name="daemon")
