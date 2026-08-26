@@ -34,9 +34,9 @@ breezed validate breezed.toml --probe               # check config; probe reads 
 The `daemon` subcommands manage the systemd deployment:
 
 ```sh
-sudo breezed daemon install --start   # idempotent install/upgrade of the unit
+breezed daemon install                # stage runtime+unit+config to /tmp, print the sudo commands
 breezed daemon status                 # unit state + installed-vs-running version drift
-sudo breezed daemon uninstall         # disable/remove the unit; keeps user/env/config
+breezed daemon uninstall              # print the commands; keeps user/env/config
 ```
 
 Exit codes: `0` ok, `1` runtime error (e.g. IPMI failure), `2` usage/config error.
@@ -44,30 +44,33 @@ Machine-readable output is always JSON on stdout; errors go to stderr as text.
 
 ## Deploy (systemd)
 
-systemd is the only deployment path — no containers. One command installs or
-upgrades everything:
+systemd is the only deployment path — no containers. `daemon install` never
+escalates itself: it stages everything into `/tmp/breezed-install/`, smoke-tests
+the staged runtime, then prints a copy-paste block of plain sudo commands
+(bash/zsh/fish safe):
 
 ```sh
 uv tool install .
-sudo breezed daemon install --start
-sudo $EDITOR /etc/breezed.env      # fill IDRAC_HOST/IDRAC_USER/IDRAC_PASSWORD
+breezed daemon install
+# review, then paste the printed commands:
+sudo systemctl enable --now breezed
+sudoedit /etc/breezed.env          # fill IDRAC_HOST/IDRAC_USER/IDRAC_PASSWORD first
 sudo systemctl restart breezed     # pick up the credentials you just wrote
 journalctl -u breezed -f           # watch the first hour
 ```
 
-`daemon install` is idempotent and safe to re-run at any time. It creates the
-dedicated `breezed` system user, renders `/etc/systemd/system/breezed.service`
-from a template shipped inside breezed itself, writes an empty skeleton for
-`/etc/breezed.env` (`root:breezed`, mode `0640`) only if absent — it never
+Re-running `daemon install` re-stages a fresh runtime; re-pasting the block
+upgrades in place. The command list creates the dedicated `breezed` system
+user, installs the unit rendered from the template shipped inside breezed,
+writes an env skeleton for `/etc/breezed.env` only if absent — it never
 overwrites an existing env file or config — and copies the packaged example
 config (`breezed.toml.example`) to `/etc/breezed/breezed.toml` only if that
 file does not exist yet.
 
 **Upgrading**: after `uv tool upgrade breezed` (or reinstalling from source),
-run `sudo breezed daemon install` again — this re-renders the unit so its
-`ExecStart` points at the new binary shim — then `sudo systemctl restart
-breezed`. Local edits to `/etc/breezed/breezed.toml` survive upgrades (the
-config hot-reloads on mtime change anyway). `breezed daemon status` shows the
+run `breezed daemon install` again and re-paste the printed block, then
+`sudo systemctl restart breezed`. Local edits to `/etc/breezed/breezed.toml`
+survive upgrades (the config hot-reloads on mtime change anyway). `breezed daemon status` shows the
 version stamped into the installed unit next to the version of the running
 binary, so drift between "unit installed by" and "binary running as" is
 visible at a glance; if they disagree, re-run `daemon install`.
