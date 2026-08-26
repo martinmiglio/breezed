@@ -119,6 +119,9 @@ class Settings(BaseModel):
     def _parse_curve(cls, value: object) -> object:
         if value is None or (isinstance(value, list) and not value):
             return DEFAULT_CURVE
+        # Programmatic construction (tests, callers) passes validated points directly.
+        if isinstance(value, tuple) and all(isinstance(p, CurvePoint) for p in value):
+            return value
         if not isinstance(value, list) or any(not isinstance(r, dict) for r in value):
             msg = "curve: expected an array of tables"
             raise ValueError(msg)
