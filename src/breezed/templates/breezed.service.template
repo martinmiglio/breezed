@@ -11,6 +11,14 @@ EnvironmentFile=-/etc/breezed.env
 Restart=always
 RestartSec=5
 
+# Memory bounds — steady RSS is ~25-35 MB; cap defensively and let
+# Restart=always recover if it ever climbs. MALLOC_ARENA_MAX tames glibc
+# arena growth in the multithreaded (metrics + ipmitool) daemon.
+Environment=MALLOC_ARENA_MAX=2
+MemoryHigh=64M
+MemoryMax=96M
+TasksMax=64
+
 # Hardening — small network daemon that shells out to ipmitool
 User=breezed
 Group=breezed
