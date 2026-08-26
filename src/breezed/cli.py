@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import signal
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -25,7 +26,6 @@ from breezed.config import ConfigError, Settings, load_settings
 from breezed.controller import Controller, EventSink
 from breezed.curve import interpolate
 from breezed.daemon import (
-    STAGING_DIR,
     DaemonError,
     daemon_status,
     install_commands,
@@ -304,22 +304,23 @@ def _print_command_block(commands: list[str], note: str) -> None:
 @daemon_app.command("install")
 def daemon_install(
     staging_dir: Annotated[
-        Path, typer.Option("--staging-dir", help="Where the staged files are written")
-    ] = STAGING_DIR,
+        Path | None, typer.Option("--staging-dir", help="Override the private staging directory")
+    ] = None,
 ) -> None:
-    """Stage unit + env + config into a temp dir; print the privileged commands."""
+    """Stage unit + env + config into a private temp dir; print the privileged commands."""
     if os.geteuid() == 0:
         typer.secho(
             "Run this staging command without sudo; it does not modify system paths.",
             fg=typer.colors.YELLOW,
             err=True,
         )
+    stage_dir = staging_dir or Path(tempfile.mkdtemp(prefix="breezed-install-"))
     try:
-        files = stage_files(staging_dir)
+        files = stage_files(stage_dir)
     except DaemonError as err:
         _fail(err, code=1)
     print(json.dumps({"event": "install_staged", "files": files}))
-    commands = install_commands()
+    commands = install_commands(stage_dir)
     _print_command_block(commands[1:2], "1. Install or upgrade the system runtime with uv:")
     _print_command_block(
         [commands[0], *commands[2:6]],

@@ -157,7 +157,7 @@ def test_stage_files_replaces_non_directory_at_staging_path(tmp_path: Path, make
 
 
 def test_install_commands_use_uv_opt_layout_and_protect_existing_state() -> None:
-    command_list = install_commands()
+    command_list = install_commands(Path("/tmp/breezed-install"))
     commands = "\n".join(command_list)
 
     assert command_list[0] == (
@@ -225,7 +225,7 @@ def test_daemon_install_prints_json_then_commands(cli_runner: CliRunner, tmp_pat
         result.output.index(heading) for heading in headings
     )
     output_lines = {line.strip() for line in result.output.splitlines()}
-    assert set(install_commands()) <= output_lines
+    assert set(install_commands(staging)) <= output_lines
 
 
 def test_daemon_install_warns_when_run_as_root(

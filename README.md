@@ -49,7 +49,7 @@ Machine-readable output is always JSON on stdout; errors go to stderr as text.
 
 systemd is the only deployment path — no containers. `daemon install` never
 escalates itself or copies a Python runtime. It stages only `breezed.service`,
-`breezed.env`, and `breezed.toml` in `/tmp/breezed-install/`, then prints a
+`breezed.env`, and `breezed.toml` in a private temp directory, then prints a
 bash/zsh/fish-safe block for review. uv installs and manages the runtime directly
 under `/opt`:
 

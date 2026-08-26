@@ -21,7 +21,6 @@ from breezed.types import DomainError
 
 SERVICE_NAME = "breezed"
 EXEC_PATH = "/usr/local/bin/breezed"
-STAGING_DIR = Path("/tmp/breezed-install")
 
 _UNIT_STAMP_RE = re.compile(r"^# Installed by breezed (\S+) on ", re.MULTILINE)
 
@@ -161,7 +160,7 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def stage_files(staging_dir: Path = STAGING_DIR) -> list[str]:
+def stage_files(staging_dir: Path) -> list[str]:
     """Wipe staging_dir and write the unit, env skeleton, and example config."""
     _remove_path(staging_dir)
     staged = {
@@ -179,13 +178,13 @@ def stage_files(staging_dir: Path = STAGING_DIR) -> list[str]:
     return [str(path) for path in staged]
 
 
-def install_commands() -> list[str]:
+def install_commands(staging_dir: Path) -> list[str]:
     """Privileged commands turning the staged files into a running service.
 
     uv owns /opt/breezed and /opt/breezed-python via pinned env vars, so one
     tool-install line replaces any manual runtime copying.
     """
-    s = str(STAGING_DIR)
+    s = str(staging_dir)
     return [
         "sudo useradd --system --no-create-home --shell /usr/sbin/nologin breezed  "
         "# skip if user already exists",
@@ -219,7 +218,6 @@ def uninstall_commands() -> list[str]:
 
 __all__ = [
     "EXEC_PATH",
-    "STAGING_DIR",
     "CommandRunner",
     "DaemonError",
     "DaemonStatus",
