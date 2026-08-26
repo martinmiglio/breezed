@@ -55,9 +55,7 @@ format.
    that direct logger calls could bypass. Keep a derived constant for tests only:
 
    ```python
-   SPEC_EVENT_NAMES: frozenset[str] = frozenset(
-       e.value for e in EventType
-   )
+   SPEC_EVENT_NAMES: frozenset[str] = frozenset(e.value for e in EventType)
    ```
 
    This is the single source of truth the tests check against; it must never be
@@ -136,8 +134,7 @@ format.
        ipmi_errors_total: int = 0
        polls_total: int = 0
 
-       def record_poll(self, temp_c: TempC, fan_percent: FanPercent,
-                       mode: OperatingMode) -> None: ...
+       def record_poll(self, temp_c: TempC, fan_percent: FanPercent, mode: OperatingMode) -> None: ...
        def record_ipmi_error(self) -> None: ...
        def render(self) -> str: ...
    ```
@@ -411,9 +408,7 @@ class MetricsState:
     ipmi_errors_total: int = 0
     polls_total: int = 0
 
-    def record_poll(
-        self, temp_c: TempC, fan_percent: FanPercent, mode: OperatingMode
-    ) -> None: ...
+    def record_poll(self, temp_c: TempC, fan_percent: FanPercent, mode: OperatingMode) -> None: ...
     def record_ipmi_error(self) -> None: ...
     def render(self) -> str:
         """Exact five-line SPEC block (no # HELP/# TYPE), trailing newline;

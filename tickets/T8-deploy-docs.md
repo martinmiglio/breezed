@@ -101,14 +101,15 @@ class InstallerPaths:
     env_path: Path = Path("/etc/breezed.env")
     config_dir: Path = Path("/etc/breezed")
 
+
 class DaemonInstaller:
     def __init__(
         self,
         paths: InstallerPaths = InstallerPaths(),
         *,
         runner: Callable[[list[str]], None] = subprocess.run_wrapper,
-        fs: FileOps = RealFileOps(),          # write_text/mkdir/chown/chmod/stat seams
-        exec_path: str | None = None,         # defaults to current executable
+        fs: FileOps = RealFileOps(),  # write_text/mkdir/chown/chmod/stat seams
+        exec_path: str | None = None,  # defaults to current executable
         require_root: bool = True,
     ) -> None: ...
 
@@ -301,19 +302,19 @@ def _run_systemctl(argv: list[str]) -> None:
 
 @dataclass(frozen=True, slots=True)
 class InstallReport:
-    created: tuple[str, ...]      # steps that created/wrote something
-    skipped: tuple[str, ...]      # idempotent no-op steps
-    unit_version: str             # version stamped into the rendered unit
+    created: tuple[str, ...]  # steps that created/wrote something
+    skipped: tuple[str, ...]  # idempotent no-op steps
+    unit_version: str  # version stamped into the rendered unit
     started: bool
 
 
 @dataclass(frozen=True, slots=True)
 class DaemonStatus:
     unit_present: bool
-    active: bool                  # systemctl is-active
-    enabled: bool                 # systemctl is-enabled
-    unit_version: str | None      # stamp read from installed unit; None if absent
-    binary_version: str           # running breezed.__version__ (drift vs unit_version)
+    active: bool  # systemctl is-active
+    enabled: bool  # systemctl is-enabled
+    unit_version: str | None  # stamp read from installed unit; None if absent
+    binary_version: str  # running breezed.__version__ (drift vs unit_version)
 
 
 class DaemonInstaller:
@@ -322,14 +323,14 @@ class DaemonInstaller:
         paths: InstallerPaths = InstallerPaths(),
         *,
         runner: SystemdRunner = _run_systemctl,
-        fs: FileOps = RealFileOps(),     # stateless; safe shared default
-        exec_path: str | None = None,    # defaults to current executable
+        fs: FileOps = RealFileOps(),  # stateless; safe shared default
+        exec_path: str | None = None,  # defaults to current executable
         require_root: bool = True,
     ) -> None: ...
 
     def install(self, *, start: bool = False) -> InstallReport: ...
     def status(self) -> DaemonStatus: ...
-    def uninstall(self) -> None: ...     # unit only; user/env/config untouched
+    def uninstall(self) -> None: ...  # unit only; user/env/config untouched
 
 
 __all__ = [
