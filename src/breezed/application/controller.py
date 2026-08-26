@@ -1,8 +1,8 @@
 """Control-loop state machine: hysteresis, failure fallback, hot-reload intake.
 
 No I/O beyond the TempReader/FanCommander protocol calls; every observable
-action flows through the injected EventSink. Hysteresis and AUTO fallback are
-central here so every SpeedPolicy strategy inherits them for free.
+action flows through the injected EventSink. Hysteresis and AUTO fallback live
+here so they apply uniformly to every target the curve produces.
 """
 
 import time
@@ -10,9 +10,8 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Protocol, cast
 
-from breezed.domain.curve import validate_curve
-from breezed.domain.policy import CurvePolicy
-from breezed.domain.ports import FanCommander, IpmiError, SpeedPolicy, TempReader
+from breezed.domain.curve import interpolate, validate_curve
+from breezed.domain.ports import FanCommander, IpmiError, TempReader
 from breezed.domain.settings import Settings
 from breezed.domain.types import EventType, FanPercent, make_fan_pct
 
@@ -30,7 +29,7 @@ class EventSink(Protocol):
 
 
 class Controller:
-    """Each tick(): read -> decide via policy -> command hardware -> emit events."""
+    """Each tick(): read -> decide target via the curve -> command hardware -> emit events."""
 
     def __init__(
         self,
@@ -40,14 +39,12 @@ class Controller:
         sink: EventSink,
         *,
         clock: Callable[[], float] = time.monotonic,
-        policy: SpeedPolicy | None = None,
     ) -> None:
         self._reader = reader
         self._commander = commander
         self._settings = settings
         self._sink = sink
         self._clock = clock
-        self._policy: SpeedPolicy = policy if policy is not None else CurvePolicy()
         self._state = ControlState.UNKNOWN
         self._last_pct: FanPercent | None = None
         self._failure_streak = 0
@@ -119,7 +116,7 @@ class Controller:
             return
 
         self._failure_streak = 0
-        target = self._policy.target_pct(temp, self._settings)
+        target = interpolate(self._settings.curve, temp)
 
         if target is None:
             self._pending_down = None
