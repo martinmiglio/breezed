@@ -2,7 +2,7 @@
 
 import pytest
 
-from breezed.types import (
+from breezed.domain.types import (
     EventType,
     FanPercent,
     OperatingMode,

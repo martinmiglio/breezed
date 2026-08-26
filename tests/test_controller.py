@@ -1,11 +1,11 @@
 """SPEC controller cases 1-12 plus companion coverage; fakes only, no sleeps."""
 
-from breezed.config import Settings
-from breezed.controller import Controller, ControlState
-from breezed.curve import CurvePoint
-from breezed.ipmi import IpmiError
-from breezed.ports import SpeedPolicy
-from breezed.types import EventType, FanPercent, TempC
+from breezed.adapters.ipmi import IpmiError
+from breezed.application.controller import Controller, ControlState
+from breezed.domain.curve import CurvePoint
+from breezed.domain.ports import SpeedPolicy
+from breezed.domain.settings import Settings
+from breezed.domain.types import EventType, FanPercent, TempC
 
 DEFAULT_CURVE = (
     CurvePoint(TempC(45), FanPercent(6)),

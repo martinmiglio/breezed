@@ -15,11 +15,11 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-from breezed import cli
-from breezed.cli import AppDeps, app
-from breezed.config import Settings
-from breezed.ipmi import IpmiClient, IpmiError
-from breezed.types import FanPercent, TempC
+from breezed.adapters.ipmi import IpmiClient, IpmiError
+from breezed.domain.settings import Settings
+from breezed.domain.types import FanPercent, TempC
+from breezed.entry import runtime as cli
+from breezed.entry.runtime import AppDeps, app
 
 PASSWORD = "hunter2-supersecret"
 

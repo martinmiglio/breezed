@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Protocol
 
 from breezed import __version__
-from breezed.types import DomainError
+from breezed.domain.types import DomainError
 
 SERVICE_NAME = "breezed"
 SERVICE_USER = "breezed"

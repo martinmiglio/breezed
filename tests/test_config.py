@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from breezed.config import (
-    DEFAULT_CURVE,
+from breezed.adapters.config import (
     ConfigError,
     load_settings,
 )
-from breezed.curve import CurvePoint
-from breezed.types import FanPercent, TempC
-from breezed.watcher import ConfigWatcher
+from breezed.adapters.watcher import ConfigWatcher
+from breezed.domain.curve import CurvePoint
+from breezed.domain.settings import DEFAULT_CURVE
+from breezed.domain.types import FanPercent, TempC
 
 FIXTURE = Path(__file__).parent / "fixtures" / "config_valid.toml"
 

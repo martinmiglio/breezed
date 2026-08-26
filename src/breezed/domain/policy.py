@@ -2,9 +2,9 @@
 
 from dataclasses import dataclass
 
-from breezed.config import Settings
-from breezed.curve import interpolate
-from breezed.types import TempC
+from breezed.domain.curve import interpolate
+from breezed.domain.settings import Settings
+from breezed.domain.types import TempC
 
 
 @dataclass(frozen=True, slots=True)

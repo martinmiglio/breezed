@@ -6,8 +6,8 @@ never on a concrete adapter. This file owns all Protocols.
 
 from typing import Protocol, runtime_checkable
 
-from breezed.config import Settings
-from breezed.types import DomainError, FanPercent, TempC
+from breezed.domain.settings import Settings
+from breezed.domain.types import DomainError, FanPercent, TempC
 
 
 class IpmiError(DomainError):
