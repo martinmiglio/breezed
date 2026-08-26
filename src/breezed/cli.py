@@ -6,10 +6,15 @@ reserved for JSON/machine output. Kept free of module-level side effects beyond
 ``app`` and ``deps`` so daemon_app can mount via ``app.add_typer(...)``.
 """
 
+import getpass
 import json
 import logging
 import os
+import shutil
 import signal
+import subprocess
+import sys
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -25,12 +30,15 @@ from breezed.config import ConfigError, Settings, load_settings
 from breezed.controller import Controller, EventSink
 from breezed.curve import interpolate
 from breezed.daemon import (
-    STAGING_DIR,
     DaemonError,
+    Step,
+    StepOutcome,
+    apply,
+    build_remove_steps,
+    build_steps,
     daemon_status,
-    install_commands,
+    remove,
     stage_files,
-    uninstall_commands,
 )
 from breezed.ipmi import IpmiClient, IpmiError
 from breezed.logs import LoggingEventSink, setup_logging
@@ -293,39 +301,116 @@ def validate(
 
 daemon_app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
+_KEEP = ["/etc/breezed.env", "/etc/breezed"]
 
-def _print_command_block(commands: list[str], note: str) -> None:
-    console = rich.console.Console()
+
+def _resolve_self() -> Path:
+    return Path(os.path.realpath(sys.argv[0]))
+
+
+def _resolve_sudo() -> str:
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        _fail(DaemonError("sudo not found; `daemon install` needs a single sudo prompt"), code=1)
+    return sudo
+
+
+def _resolve_uv() -> str:
+    uv = shutil.which("uv")
+    if uv is None:
+        _fail(DaemonError("uv not found on PATH; install uv first"), code=1)
+    return uv
+
+
+def _print_step_plan(steps: list[Step], note: str) -> None:
+    console = rich.console.Console(stderr=True)
     console.print(note, style="yellow")
-    for command in commands:
-        console.print(f"  {command}", style="bold cyan", soft_wrap=True)
+    for step in steps:
+        console.print(f"  • {step.label}", style="bold cyan", soft_wrap=True)
+
+
+def _print_results(results: list[tuple[str, StepOutcome]]) -> None:
+    console = rich.console.Console(stderr=True)
+    for label, outcome in results:
+        if outcome is StepOutcome.SKIPPED:
+            console.print(f"  · {label}", style="dim", soft_wrap=True)
+        else:
+            console.print(f"  ✔ {label}", style="green", soft_wrap=True)
+
+
+def _run_sudo(argv: list[str]) -> None:
+    completed = subprocess.run(argv, check=False)
+    if completed.returncode != 0:
+        raise typer.Exit(code=completed.returncode or 1)
 
 
 @daemon_app.command("install")
 def daemon_install(
     staging_dir: Annotated[
-        Path, typer.Option("--staging-dir", help="Where the staged files are written")
-    ] = STAGING_DIR,
+        Path | None, typer.Option("--staging-dir", help="Override the private staging directory")
+    ] = None,
+    source: Annotated[
+        Path | None, typer.Option("--source", help="uv source spec (defaults to current checkout)")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the privileged steps without escalating")
+    ] = False,
 ) -> None:
-    """Stage unit + env + config into a temp dir; print the privileged commands."""
-    if os.geteuid() == 0:
-        typer.secho(
-            "Run this staging command without sudo; it does not modify system paths.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
+    """Stage the unit/env/config, then install the system service via one sudo prompt."""
+    resolved_source = str((source or Path.cwd()).resolve())
+    resolved_uv = _resolve_uv()
+    owner = getpass.getuser()
+    stage_dir = staging_dir or Path(tempfile.mkdtemp(prefix="breezed-install-"))
     try:
-        files = stage_files(staging_dir)
+        stage_files(stage_dir)
     except DaemonError as err:
         _fail(err, code=1)
-    print(json.dumps({"event": "install_staged", "files": files}))
-    commands = install_commands()
-    _print_command_block(commands[1:2], "1. Install or upgrade the system runtime with uv:")
-    _print_command_block(
-        [commands[0], *commands[2:6]],
-        "2. Install systemd files (skip existing config/secrets):",
-    )
-    _print_command_block(commands[6:], "3. Enable and verify:")
+
+    steps = build_steps(stage_dir, owner, resolved_uv, resolved_source)
+
+    if os.geteuid() == 0:
+        try:
+            _print_results(apply(stage_dir, owner, resolved_uv, resolved_source))
+        except DaemonError as err:
+            _fail(err, code=1)
+        print(json.dumps({"event": "install_complete"}))
+        return
+
+    _print_step_plan(steps, "The following privileged steps will run:")
+    if dry_run:
+        print(json.dumps({"event": "install_planned", "steps": [step.label for step in steps]}))
+        return
+    argv = [
+        _resolve_sudo(),
+        str(_resolve_self()),
+        "daemon",
+        "apply",
+        "--staging-dir",
+        str(stage_dir),
+        "--owner",
+        owner,
+        "--uv",
+        resolved_uv,
+        "--source",
+        resolved_source,
+    ]
+    _run_sudo(argv)
+    print(json.dumps({"event": "install_complete"}))
+
+
+@daemon_app.command("apply", hidden=True)
+def daemon_apply(
+    staging_dir: Annotated[Path, typer.Option()],
+    owner: Annotated[str, typer.Option()],
+    uv: Annotated[str, typer.Option()],
+    source: Annotated[str, typer.Option()],
+) -> None:
+    """Internal privileged install step, invoked via sudo by `daemon install`."""
+    try:
+        results = apply(staging_dir, owner, uv, source)
+    except DaemonError as err:
+        _fail(err, code=1)
+    _print_results(results)
 
 
 @daemon_app.command("status")
@@ -338,13 +423,51 @@ def daemon_status_command() -> None:
 
 
 @daemon_app.command("uninstall")
-def daemon_uninstall() -> None:
-    """Stop and remove the service and runtime; keeps /etc/breezed.env and /etc/breezed/."""
-    _print_command_block(
-        uninstall_commands(),
-        "Review, then run these commands to uninstall. /etc/breezed.env and /etc/breezed/ remain:",
-    )
-    print(json.dumps({"event": "uninstall_planned", "keeps": ["/etc/breezed.env", "/etc/breezed"]}))
+def daemon_uninstall(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the privileged steps without escalating")
+    ] = False,
+) -> None:
+    """Stop and remove the service and runtime via one sudo prompt; keeps /etc/breezed.env/."""
+    resolved_uv = _resolve_uv()
+
+    steps = build_remove_steps(resolved_uv)
+
+    if os.geteuid() == 0:
+        try:
+            _print_results(remove(resolved_uv))
+        except DaemonError as err:
+            _fail(err, code=1)
+        print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
+        return
+
+    _print_step_plan(steps, "The following privileged steps will run:")
+    if dry_run:
+        print(
+            json.dumps(
+                {
+                    "event": "uninstall_planned",
+                    "keeps": _KEEP,
+                    "steps": [step.label for step in steps],
+                }
+            )
+        )
+        return
+    argv = [_resolve_sudo(), str(_resolve_self()), "daemon", "remove", "--uv", resolved_uv]
+    _run_sudo(argv)
+    print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
+
+
+@daemon_app.command("remove", hidden=True)
+def daemon_remove(
+    uv: Annotated[str, typer.Option()],
+) -> None:
+    """Internal privileged uninstall step, invoked via sudo by `daemon uninstall`."""
+    try:
+        results = remove(uv)
+    except DaemonError as err:
+        _fail(err, code=1)
+    _print_results(results)
 
 
 app.add_typer(daemon_app, name="daemon")

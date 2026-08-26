@@ -1,7 +1,8 @@
-"""Daemon deployment staging, command planning, and status tests."""
+"""Daemon deployment staging, execution, and status tests."""
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -12,13 +13,19 @@ from breezed import cli
 from breezed.cli import app
 from breezed.daemon import (
     EXEC_PATH,
+    UV_PYTHON_INSTALL_DIR,
+    UV_TOOL_BIN_DIR,
+    UV_TOOL_DIR,
     DaemonError,
     DaemonStatus,
     InstallerPaths,
+    StepOutcome,
+    apply,
+    build_remove_steps,
+    build_steps,
     daemon_status,
-    install_commands,
+    remove,
     stage_files,
-    uninstall_commands,
 )
 
 UNIT_NAME = "breezed.service"
@@ -27,6 +34,12 @@ STAMPED_UNIT = f"""\
 [Service]
 ExecStart={EXEC_PATH} run
 """
+
+UV_ENV = {
+    "UV_TOOL_DIR": UV_TOOL_DIR,
+    "UV_TOOL_BIN_DIR": UV_TOOL_BIN_DIR,
+    "UV_PYTHON_INSTALL_DIR": UV_PYTHON_INSTALL_DIR,
+}
 
 
 class FakeFileOps:
@@ -48,12 +61,12 @@ class FakeRunner:
         outputs: dict[str, str] | None = None,
         errors: dict[str, str] | None = None,
     ) -> None:
-        self.argvs: list[list[str]] = []
+        self.argvs: list[tuple[list[str], Mapping[str, str] | None]] = []
         self.outputs = outputs or {}
         self.errors = errors or {}
 
-    def __call__(self, argv: list[str]) -> str:
-        self.argvs.append(argv)
+    def __call__(self, argv: list[str], *, env: Mapping[str, str] | None = None) -> str:
+        self.argvs.append((argv, env))
         key = " ".join(argv)
         if key in self.errors:
             raise DaemonError(self.errors[key])
@@ -72,6 +85,14 @@ def paths(tmp_path: Path) -> InstallerPaths:
 @pytest.fixture
 def cli_runner() -> CliRunner:
     return CliRunner()
+
+
+def _stage(tmp_path: Path) -> Path:
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    for name in ("breezed.service", "breezed.env", "breezed.toml"):
+        (staging / name).write_text("x", encoding="utf-8")
+    return staging
 
 
 def test_status_reports_version_drift_when_stamped_unit_differs(paths: InstallerPaths) -> None:
@@ -101,7 +122,7 @@ def test_status_is_unprivileged(paths: InstallerPaths) -> None:
 
     assert all(
         argv[:2] in (["systemctl", "is-active"], ["systemctl", "is-enabled"])
-        for argv in runner.argvs
+        for argv, _env in runner.argvs
     )
 
 
@@ -138,89 +159,277 @@ def test_staged_unit_is_static_and_has_expected_exec_start(tmp_path: Path) -> No
     )
 
 
-def test_install_commands_use_uv_opt_layout_and_protect_existing_state() -> None:
-    command_list = install_commands()
-    commands = "\n".join(command_list)
+def test_build_steps_labels_and_order(tmp_path: Path) -> None:
+    steps = build_steps(tmp_path, "martin", "/usr/local/bin/uv", "/home/martin/Projects/breezed")
 
-    assert command_list[0] == (
-        "sudo useradd --system --no-create-home --shell /usr/sbin/nologin breezed  "
-        "# skip if user already exists"
-    )
-    assert "UV_TOOL_DIR=/opt/breezed" in commands
-    assert "UV_TOOL_BIN_DIR=/usr/local/bin" in commands
-    assert "UV_PYTHON_INSTALL_DIR=/opt/breezed-python" in commands
-    assert "tool install ~/Projects/breezed --reinstall" in commands
-    assert (
-        "sudo install -D -o root -g root -m 0644 /tmp/breezed-install/breezed.service "
-        "/etc/systemd/system/breezed.service" in command_list
-    )
-    assert (
-        'sudo install -D -o "$USER" -g "$USER" -m 0664 '
-        "/tmp/breezed-install/breezed.toml /etc/breezed/breezed.toml  "
-        "# skip if a tuned config exists" in command_list
-    )
-    assert (
-        "sudo install -D -o root -g breezed -m 0640 /tmp/breezed-install/breezed.env "
-        "/etc/breezed.env  # skip if secrets already set" in command_list
-    )
-    assert "sudo systemctl enable --now breezed" in commands
+    assert [step.label for step in steps] == [
+        "ensure system user 'breezed'",
+        "uv tool install runtime under /opt",
+        "install /etc/systemd/system/breezed.service",
+        "install /etc/breezed/breezed.toml (first run only)",
+        "install /etc/breezed.env (first run only)",
+        "systemctl daemon-reload",
+        "systemctl enable --now breezed",
+    ]
 
 
-def test_uninstall_commands_remove_uv_runtime_and_keep_configuration() -> None:
-    commands = uninstall_commands()
-    joined = "\n".join(commands)
+def test_build_remove_steps_labels_and_order() -> None:
+    steps = build_remove_steps("/usr/local/bin/uv")
 
-    assert commands[0] == "sudo systemctl disable --now breezed"
-    assert "sudo rm -f /etc/systemd/system/breezed.service" in commands
-    assert "UV_TOOL_DIR=/opt/breezed UV_TOOL_BIN_DIR=/usr/local/bin" in joined
-    assert "tool uninstall breezed || sudo rm -rf /opt/breezed /opt/breezed-python" in joined
-    assert commands[-1] == "sudo systemctl daemon-reload"
+    assert [step.label for step in steps] == [
+        "systemctl disable --now breezed",
+        "remove /etc/systemd/system/breezed.service",
+        "uv tool uninstall breezed",
+        "systemctl daemon-reload",
+    ]
+
+
+def test_apply_full_run_argv_and_env(
+    tmp_path: Path, paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("breezed.daemon._user_exists", lambda _name: False)
+    staging = _stage(tmp_path)
+    runner = FakeRunner()
+
+    apply(
+        staging,
+        "martin",
+        "/usr/local/bin/uv",
+        "/home/martin/Projects/breezed",
+        paths=paths,
+        runner=runner,
+        fs=FakeFileOps(),
+    )
+
+    assert [argv for argv, _env in runner.argvs] == [
+        ["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "breezed"],
+        ["/usr/local/bin/uv", "tool", "install", "/home/martin/Projects/breezed", "--reinstall"],
+        [
+            "install",
+            "-D",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0644",
+            str(staging / "breezed.service"),
+            str(paths.unit_path),
+        ],
+        [
+            "install",
+            "-D",
+            "-o",
+            "martin",
+            "-g",
+            "martin",
+            "-m",
+            "0664",
+            str(staging / "breezed.toml"),
+            str(paths.config_path),
+        ],
+        [
+            "install",
+            "-D",
+            "-o",
+            "root",
+            "-g",
+            "breezed",
+            "-m",
+            "0640",
+            str(staging / "breezed.env"),
+            str(paths.env_path),
+        ],
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "breezed"],
+    ]
+    assert runner.argvs[1][1] == UV_ENV
+
+
+def test_apply_skips_user_config_and_env_when_present(
+    tmp_path: Path, paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("breezed.daemon._user_exists", lambda _name: True)
+    staging = _stage(tmp_path)
+    fs = FakeFileOps({str(paths.config_path): "tuned", str(paths.env_path): "secrets"})
+    runner = FakeRunner()
+
+    results = apply(
+        staging,
+        "martin",
+        "/usr/local/bin/uv",
+        "/home/martin/Projects/breezed",
+        paths=paths,
+        runner=runner,
+        fs=fs,
+    )
+
+    outcomes = dict(results)
+    assert outcomes["ensure system user 'breezed'"] is StepOutcome.SKIPPED
+    assert outcomes["install /etc/breezed/breezed.toml (first run only)"] is StepOutcome.SKIPPED
+    assert outcomes["install /etc/breezed.env (first run only)"] is StepOutcome.SKIPPED
+    assert [argv for argv, _env in runner.argvs] == [
+        ["/usr/local/bin/uv", "tool", "install", "/home/martin/Projects/breezed", "--reinstall"],
+        [
+            "install",
+            "-D",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0644",
+            str(staging / "breezed.service"),
+            str(paths.unit_path),
+        ],
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "breezed"],
+    ]
+
+
+def test_remove_runs_steps(paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    runner = FakeRunner()
+
+    remove("/usr/local/bin/uv", paths=paths, runner=runner)
+
+    assert [argv for argv, _env in runner.argvs] == [
+        ["systemctl", "disable", "--now", "breezed"],
+        ["rm", "-f", str(paths.unit_path)],
+        ["/usr/local/bin/uv", "tool", "uninstall", "breezed"],
+        ["systemctl", "daemon-reload"],
+    ]
+
+
+def test_remove_runtime_falls_back_to_rm_on_uninstall_failure(
+    paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    runner = FakeRunner(errors={"/usr/local/bin/uv tool uninstall breezed": "boom"})
+
+    remove("/usr/local/bin/uv", paths=paths, runner=runner)
+
+    assert ["rm", "-rf", "/opt/breezed", "/opt/breezed-python"] in [
+        argv for argv, _env in runner.argvs
+    ]
+
+
+def test_apply_requires_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+
+    with pytest.raises(DaemonError, match="root"):
+        apply(tmp_path, "martin", "/usr/local/bin/uv", "src", fs=FakeFileOps(), runner=FakeRunner())
+
+
+def test_remove_requires_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+
+    with pytest.raises(DaemonError, match="root"):
+        remove("/usr/local/bin/uv", fs=FakeFileOps(), runner=FakeRunner())
 
 
 def test_help_lists_daemon_subcommands(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(app, ["daemon", "--help"], catch_exceptions=False)
     assert result.exit_code == 0
     assert all(name in result.output for name in ("install", "status", "uninstall"))
+    assert "│ apply" not in result.output
+    assert "│ remove" not in result.output
 
 
-def test_daemon_install_prints_json_then_commands(cli_runner: CliRunner, tmp_path: Path) -> None:
+def test_daemon_install_builds_sudo_argv(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/home/martin/.local/bin/uv")
+    monkeypatch.setattr(cli.getpass, "getuser", lambda: "martin")
+    monkeypatch.setattr(cli, "_resolve_sudo", lambda: "/usr/bin/sudo")
+    monkeypatch.setattr(cli, "_resolve_self", lambda: Path("/home/martin/.local/bin/breezed"))
+    captured: list[list[str]] = []
+    monkeypatch.setattr(cli, "_run_sudo", lambda argv: captured.append(argv))
     staging = tmp_path / "stage"
+    source = str(tmp_path.resolve())
+
     result = cli_runner.invoke(
-        app, ["daemon", "install", "--staging-dir", str(staging)], catch_exceptions=False
+        app,
+        ["daemon", "install", "--staging-dir", str(staging), "--source", source],
+        catch_exceptions=False,
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.stdout.splitlines()[0])
-    assert payload == {
-        "event": "install_staged",
-        "files": [
-            str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
-        ],
-    }
-    headings = (
-        "1. Install or upgrade the system runtime with uv:",
-        "2. Install systemd files (skip existing config/secrets):",
-        "3. Enable and verify:",
-    )
-    assert all(heading in result.output for heading in headings)
-    assert [result.output.index(heading) for heading in headings] == sorted(
-        result.output.index(heading) for heading in headings
-    )
-    output_lines = {line.strip() for line in result.output.splitlines()}
-    assert set(install_commands()) <= output_lines
+    assert json.loads(result.stdout) == {"event": "install_complete"}
+    assert captured == [
+        [
+            "/usr/bin/sudo",
+            "/home/martin/.local/bin/breezed",
+            "daemon",
+            "apply",
+            "--staging-dir",
+            str(staging),
+            "--owner",
+            "martin",
+            "--uv",
+            "/home/martin/.local/bin/uv",
+            "--source",
+            source,
+        ]
+    ]
 
 
-def test_daemon_install_warns_when_run_as_root(
+def test_daemon_install_dry_run_prints_plan_without_sudo(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
+    monkeypatch.setattr(cli.getpass, "getuser", lambda: "martin")
+
+    def boom(_argv: list[str]) -> None:
+        raise AssertionError("sudo must not run in dry-run")
+
+    monkeypatch.setattr(cli, "_run_sudo", boom)
+
+    result = cli_runner.invoke(
+        app,
+        ["daemon", "install", "--staging-dir", str(tmp_path / "stage"), "--dry-run"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["event"] == "install_planned"
+    assert "uv tool install runtime under /opt" in payload["steps"]
+    assert "systemctl enable --now breezed" in payload["steps"]
+    assert "privileged steps" in result.stderr
+
+
+def test_daemon_install_as_root_applies_in_process(
     cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
+    monkeypatch.setattr(cli.getpass, "getuser", lambda: "martin")
+    monkeypatch.setattr(
+        cli,
+        "apply",
+        lambda staging, owner, uv, source: [
+            ("ensure system user 'breezed'", StepOutcome.DONE),
+            ("uv tool install runtime under /opt", StepOutcome.DONE),
+        ],
+    )
 
-    result = cli_runner.invoke(app, ["daemon", "install", "--staging-dir", str(tmp_path / "stage")])
+    def boom(_argv: list[str]) -> None:
+        raise AssertionError("sudo must not run as root")
+
+    monkeypatch.setattr(cli, "_run_sudo", boom)
+
+    result = cli_runner.invoke(
+        app, ["daemon", "install", "--staging-dir", str(tmp_path / "stage")], catch_exceptions=False
+    )
 
     assert result.exit_code == 0
-    assert (
-        "Run this staging command without sudo; it does not modify system paths." in result.stderr
-    )
+    assert json.loads(result.stdout) == {"event": "install_complete"}
+    assert "✔" in result.stderr
 
 
 def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner) -> None:
@@ -230,6 +439,9 @@ def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner) -> None:
 def test_daemon_install_staging_error_exits_1(
     cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
+    monkeypatch.setattr(cli.getpass, "getuser", lambda: "martin")
+
     def boom(_staging_dir: Path) -> list[str]:
         raise DaemonError("cannot stage files")
 
@@ -239,18 +451,47 @@ def test_daemon_install_staging_error_exits_1(
     assert "cannot stage files" in result.stderr
 
 
-def test_daemon_uninstall_prints_plan_and_retained_state(cli_runner: CliRunner) -> None:
+def test_daemon_uninstall_builds_sudo_argv(
+    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
+    monkeypatch.setattr(cli, "_resolve_sudo", lambda: "/usr/bin/sudo")
+    monkeypatch.setattr(cli, "_resolve_self", lambda: Path("/usr/local/bin/breezed"))
+    captured: list[list[str]] = []
+    monkeypatch.setattr(cli, "_run_sudo", lambda argv: captured.append(argv))
+
     result = cli_runner.invoke(app, ["daemon", "uninstall"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload == {
-        "event": "uninstall_planned",
+    assert json.loads(result.stdout) == {
+        "event": "uninstall_complete",
         "keeps": ["/etc/breezed.env", "/etc/breezed"],
     }
-    assert "systemctl disable --now" in result.output
-    assert "/etc/breezed.env and /etc/breezed/" in result.output
-    assert "remain:" in result.output
+    assert captured == [
+        ["/usr/bin/sudo", "/usr/local/bin/breezed", "daemon", "remove", "--uv", "/usr/local/bin/uv"]
+    ]
+
+
+def test_daemon_uninstall_dry_run_prints_plan_and_retained_state(
+    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
+
+    def boom(_argv: list[str]) -> None:
+        raise AssertionError("sudo must not run in dry-run")
+
+    monkeypatch.setattr(cli, "_run_sudo", boom)
+
+    result = cli_runner.invoke(app, ["daemon", "uninstall", "--dry-run"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["event"] == "uninstall_planned"
+    assert payload["keeps"] == ["/etc/breezed.env", "/etc/breezed"]
+    assert "uv tool uninstall breezed" in payload["steps"]
+    assert "systemctl disable --now breezed" in result.stderr
 
 
 def test_daemon_status_prints_report_json_exit_0(

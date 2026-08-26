@@ -13,16 +13,18 @@ behind small Protocols, so either can be swapped without touching the core.
 
 ## Install
 
-From a checkout, stage the systemd files and print the installation plan:
+From a checkout, run one command and enter your password once:
 
 ```sh
 uv run breezed daemon install
-# review, then paste the printed sudo commands in order
 ```
 
-This user-level `uv` only invokes breezed from the checkout. It is not copied
-into the system installation and is not a service dependency; the printed uv
-command installs and manages the system runtime under `/opt`.
+`daemon install` stages the unit/env/config, then re-executes itself via sudo to
+perform the fixed privileged steps (create the service user, install the runtime
+under `/opt`, write the systemd unit, enable and start the service). Pass
+`--dry-run` to print the steps without escalating. The user-level `uv` only
+invokes breezed from the checkout; it is not copied into the system installation
+and is not a service dependency.
 
 ## CLI examples
 
@@ -37,9 +39,10 @@ breezed validate breezed.toml --probe               # check config; probe reads 
 The `daemon` subcommands manage the systemd deployment:
 
 ```sh
-uv run breezed daemon install         # stage unit+env+config to /tmp, print install commands
+uv run breezed daemon install         # one command, one sudo prompt
+breezed daemon install --dry-run      # print the privileged steps without escalating
 breezed daemon status                 # report unit state and binary version
-breezed daemon uninstall              # print removal commands; keep env/config
+breezed daemon uninstall              # one command, one sudo prompt; keeps env/config
 ```
 
 Exit codes: `0` ok, `1` runtime error (e.g. IPMI failure), `2` usage/config error.
@@ -47,46 +50,42 @@ Machine-readable output is always JSON on stdout; errors go to stderr as text.
 
 ## Deploy (systemd)
 
-systemd is the only deployment path — no containers. `daemon install` never
-escalates itself or copies a Python runtime. It stages only `breezed.service`,
-`breezed.env`, and `breezed.toml` in `/tmp/breezed-install/`, then prints a
-bash/zsh/fish-safe block for review. uv installs and manages the runtime directly
-under `/opt`:
+systemd is the only deployment path — no containers. `daemon install` stages
+`breezed.service`, `breezed.env`, and `breezed.toml` into a private temp
+directory, prints the privileged steps, then re-executes itself once via sudo
+to perform them. uv installs and manages the runtime directly under `/opt`:
 
 ```sh
 uv run breezed daemon install
-# review, then paste the printed commands in order
-# skip the config/env install lines if those files are already configured
+# one sudo password prompt; then:
 sudoedit /etc/breezed.env
 journalctl -u breezed -f
 ```
 
-Never run `sudo breezed daemon install`: staging is unprivileged and does not
-modify system paths. Use `sudo` only on the commands printed by the staging
-command.
+`daemon install --dry-run` prints the same steps without escalating, for review.
+The sudo re-exec runs only a fixed, code-reviewed sequence — no free-form
+commands, no shell — using the absolute path of the running binary, so it is
+immune to sudo's `secure_path`.
 
-The printed uv command sets `UV_TOOL_DIR=/opt/breezed`,
+The runtime step sets `UV_TOOL_DIR=/opt/breezed`,
 `UV_TOOL_BIN_DIR=/usr/local/bin`, and
 `UV_PYTHON_INSTALL_DIR=/opt/breezed-python`, then installs the current checkout
-with `--reinstall`. Before installation, the command block creates the
-non-login `breezed` system user; skip that command if the user already exists.
-Files are installed with explicit ownership and permissions:
+with `--reinstall`. The sequence creates the non-login `breezed` system user and
+installs files with explicit ownership and permissions:
 
 - `/etc/systemd/system/breezed.service`: `root:root`, mode `0644`
-- `/etc/breezed/breezed.toml`: invoking user and group (`$USER:$USER`), mode `0664`
+- `/etc/breezed/breezed.toml`: invoking user and group, mode `0664`
 - `/etc/breezed.env`: `root:breezed`, mode `0640`
 
-The config and environment install lines are for first installation only. Skip
-them when the files are already tuned or configured, including on every upgrade,
-because `install` would overwrite them.
+The config and environment install steps run on first installation only and are
+skipped when those files already exist, so upgrades never overwrite tuned config
+or secrets.
 
-**Upgrading**: update the checkout, run `uv run breezed daemon install`, and re-paste
-the printed commands. The uv `tool install --reinstall` command replaces the
-runtime in `/opt`; skip the config and environment install lines to retain local
-settings. The system-user command can also be skipped after first installation.
-Then restart via the printed `systemctl enable --now` command.
-`breezed daemon uninstall` prints the corresponding uv removal command and a
-fallback cleanup for `/opt`; `/etc/breezed/` and `/etc/breezed.env` remain.
+**Upgrading**: update the checkout and run `uv run breezed daemon install` again.
+The uv `tool install --reinstall` step replaces the runtime in `/opt`; the config
+and environment steps are skipped because those files already exist. `breezed
+daemon uninstall` mirrors install: one sudo prompt to disable and remove the
+service and runtime, while `/etc/breezed/` and `/etc/breezed.env` remain.
 
 The metrics port is baked into the unit's `ExecStart` deliberately (netdata
 scrapes it). To run without metrics, edit the unit to drop
