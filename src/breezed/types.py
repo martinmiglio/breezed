@@ -28,11 +28,11 @@ def make_positive_int(name: str, value: int) -> int:
 
 
 class DomainError(ValueError):
-    """Shared base; T3's ConfigError and T4's IpmiError subclass this."""
+    """Shared base so config and ipmi errors can be caught as one validation family."""
 
 
 class OperatingMode(StrEnum):
-    """Domain vocabulary; members serialize via str() straight into JSON logs (T6)."""
+    """Domain vocabulary; members serialize via str() straight into JSON logs."""
 
     UNKNOWN = "unknown"
     AUTO = "auto"
@@ -40,7 +40,7 @@ class OperatingMode(StrEnum):
 
 
 class EventType(StrEnum):
-    """Closed log-event vocabulary; T5 emits these members, T6 derives its tests from them."""
+    """Closed log-event vocabulary; log consumers can match exhaustively on it."""
 
     STARTUP = "startup"
     POLL = "poll"
