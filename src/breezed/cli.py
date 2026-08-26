@@ -323,19 +323,17 @@ def _resolve_uv() -> str:
 
 
 def _print_step_plan(steps: list[Step], note: str) -> None:
-    console = rich.console.Console(stderr=True)
-    console.print(note, style="yellow")
+    typer.secho(note, fg=typer.colors.YELLOW, err=True)
     for step in steps:
-        console.print(f"  • {step.label}", style="bold cyan", soft_wrap=True)
+        typer.secho(f"  • {step.label}", fg=typer.colors.CYAN, bold=True, err=True)
 
 
 def _print_results(results: list[tuple[str, StepOutcome]]) -> None:
-    console = rich.console.Console(stderr=True)
     for label, outcome in results:
         if outcome is StepOutcome.SKIPPED:
-            console.print(f"  · {label}", style="dim", soft_wrap=True)
+            typer.secho(f"  · {label}", dim=True, err=True)
         else:
-            console.print(f"  ✔ {label}", style="green", soft_wrap=True)
+            typer.secho(f"  ✔ {label}", fg=typer.colors.GREEN, err=True)
 
 
 def _run_sudo(argv: list[str]) -> None:
