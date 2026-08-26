@@ -9,3 +9,4 @@ dist/
 build/
 *.egg-info/
 .coverage
+src/breezed/_version.py
