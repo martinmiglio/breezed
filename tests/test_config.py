@@ -8,11 +8,11 @@ import pytest
 from breezed.config import (
     DEFAULT_CURVE,
     ConfigError,
-    ConfigWatcher,
     load_settings,
 )
 from breezed.curve import CurvePoint
 from breezed.types import FanPercent, TempC
+from breezed.watcher import ConfigWatcher
 
 FIXTURE = Path(__file__).parent / "fixtures" / "config_valid.toml"
 

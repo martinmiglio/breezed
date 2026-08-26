@@ -7,22 +7,17 @@ presence, TOML type shape, env/file precedence, and error wrapping.
 
 import os
 import tomllib
-from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeIs
+from typing import TypeIs
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from breezed.curve import CurvePoint, validate_curve
-from breezed.types import (
-    DomainError,
-    TempC,
-    make_fan_pct,
-    make_positive_int,
-)
+from breezed.types import DomainError, TempC, make_fan_pct, make_positive_int
 
 
 class ConfigError(DomainError):
-    """Field-naming failure; also wraps tomllib.TOMLDecodeError and OSError.
+    """Field-naming failure; also wraps TOML decode, OS, and validation errors.
 
     Messages reference field names, never secret values (password discipline).
     """
@@ -36,98 +31,30 @@ DEFAULT_CURVE: tuple[CurvePoint, ...] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class Settings:
-    host: str
-    user: str
-    password: str
-    curve: tuple[CurvePoint, ...]
-    poll_interval_s: int = 10
-    read_failure_limit: int = 3
-    step_down_hysteresis_s: int = 30
-    metrics_port: int | None = None
-    ipmitool_path: str = "/usr/bin/ipmitool"
-
-
 def _is_int(value: object) -> TypeIs[int]:
+    # TOML has no distinct bool/int ambiguity, but Python's bool is an int and
+    # `true` for poll_interval_s would otherwise silently mean 1.
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_str(value: object) -> TypeIs[str]:
-    return isinstance(value, str)
-
-
-def _type_name(value: object) -> str:
-    return type(value).__name__
-
-
-def _require_table(data: dict[str, Any], key: str) -> dict[str, Any]:
-    value = data.get(key, {})
-    if not isinstance(value, dict):
-        msg = f"{key}: expected a table"
-        raise ConfigError(msg)
-    return value
-
-
-def _require[T](
-    table: dict[str, Any], key: str, predicate: Callable[[object], TypeIs[T]], expect: str
-) -> T | None:
-    if key not in table:
-        return None
-    value = table[key]
-    if not predicate(value):
-        msg = f"{key}: expected {expect}, got {_type_name(value)}"
-        raise ConfigError(msg)
-    return value
-
-
-def _positive_or_default(table: dict[str, Any], key: str) -> int | None:
-    raw = _require(table, key, _is_int, "an integer")
-    if raw is None:
-        return None
-    try:
-        return make_positive_int(key, raw)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
-
-
-def _cannot_read(path: str | Path, exc: OSError) -> ConfigError:
-    msg = f"config: cannot read {path}: {exc}"
-    return ConfigError(msg)
-
-
-def _secret(table: dict[str, Any], key: str, env_key: str) -> str | None:
-    """Env wins over file; an empty env value counts as unset, same as absent."""
-    env_value = os.environ.get(env_key)
-    if env_value:
-        return env_value
-    file_value = _require(table, key, _is_str, "a string")
-    if file_value:
-        return file_value
-    return None
-
-
 _IDENTITY_KEYS = (("host", "IDRAC_HOST"), ("user", "IDRAC_USER"))
+_ENV_OVERRIDES = (*_IDENTITY_KEYS, ("password", "IDRAC_PASSWORD"))
+_POSITIVE_INT_FIELDS = (
+    "poll_interval_s",
+    "read_failure_limit",
+    "step_down_hysteresis_s",
+    "metrics_port",
+)
+_DEFAULT_TOOL_PATH = "/usr/bin/ipmitool"
 
 
-def _identity(settings_table: dict[str, Any]) -> tuple[str, str]:
-    fetched = [(name, env, _secret(settings_table, name, env)) for name, env in _IDENTITY_KEYS]
-    missing = [
-        f"{name}: missing (set [settings].{name} or {env})"
-        for name, env, value in fetched
-        if value is None
-    ]
-    if missing:
-        raise ConfigError("; ".join(missing))
-    return fetched[0][2] or "", fetched[1][2] or ""
-
-
-def _curve_row(index: int, row: dict[str, Any]) -> CurvePoint:
+def _curve_row(index: int, row: dict[str, object]) -> CurvePoint:
     def require(column: str) -> int:
-        value = _require(row, column, _is_int, "an integer")
-        if value is None:
-            msg = f"curve[{index}].{column}: expected an integer, got {_type_name(None)}"
-            raise ConfigError(msg)
+        value = row.get(column)
+        if not _is_int(value):
+            got = type(value).__name__
+            msg = f"curve[{index}].{column}: expected an integer, got {got}"
+            raise ValueError(msg)
         return value
 
     temp_raw = require("temp_c")
@@ -136,24 +63,76 @@ def _curve_row(index: int, row: dict[str, Any]) -> CurvePoint:
         fan_pct = make_fan_pct(pct_raw)
     except ValueError as exc:
         msg = f"curve[{index}].{exc}"
-        raise ConfigError(msg) from exc
+        raise ValueError(msg) from exc
     return CurvePoint(temp_c=TempC(temp_raw), fan_pct=fan_pct)
 
 
-def _curve(data: dict[str, Any]) -> tuple[CurvePoint, ...]:
-    rows = data.get("curve")
-    if rows is None:
-        return DEFAULT_CURVE
-    if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
-        msg = "curve: expected an array of tables"
-        raise ConfigError(msg)
-    if not rows:
-        return DEFAULT_CURVE
-    points = tuple(_curve_row(i, r) for i, r in enumerate(rows))
-    try:
-        return validate_curve(points)
-    except ValueError as exc:
-        raise ConfigError(f"curve: {exc}") from exc
+class Settings(BaseModel):
+    """Validated runtime configuration; frozen so consumers can share it safely."""
+
+    model_config = ConfigDict(frozen=True)
+
+    host: str
+    user: str
+    password: str = ""
+    curve: tuple[CurvePoint, ...] = DEFAULT_CURVE
+    poll_interval_s: int = 10
+    read_failure_limit: int = 3
+    step_down_hysteresis_s: int = 30
+    metrics_port: int | None = None
+    ipmitool_path: str = _DEFAULT_TOOL_PATH
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_identity(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        missing = []
+        for name, env_key in _IDENTITY_KEYS:
+            value = data.get(name)
+            if isinstance(value, str) and value:
+                continue
+            missing.append(f"{name}: missing (set [settings].{name} or {env_key})")
+        if missing:
+            msg = "; ".join(missing)
+            raise ValueError(msg)
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_int_fields(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        for key in _POSITIVE_INT_FIELDS:
+            value = data.get(key)
+            if value is None:
+                continue
+            if not _is_int(value):
+                got = type(value).__name__
+                msg = f"{key}: expected an integer, got {got}"
+                raise ValueError(msg)
+            data[key] = make_positive_int(key, value)
+        return data
+
+    @field_validator("curve", mode="before")
+    @classmethod
+    def _parse_curve(cls, value: object) -> object:
+        if value is None or (isinstance(value, list) and not value):
+            return DEFAULT_CURVE
+        if not isinstance(value, list) or any(not isinstance(r, dict) for r in value):
+            msg = "curve: expected an array of tables"
+            raise ValueError(msg)
+        points = tuple(_curve_row(i, r) for i, r in enumerate(value))
+        try:
+            return validate_curve(points)
+        except ValueError as exc:
+            msg = f"curve: {exc}"
+            raise ValueError(msg) from exc
+
+    @field_validator("ipmitool_path", mode="before")
+    @classmethod
+    def _empty_tool_path_falls_back(cls, value: object) -> object:
+        return value or _DEFAULT_TOOL_PATH
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -169,61 +148,22 @@ def load_settings(path: str | Path) -> Settings:
         msg = f"config: invalid TOML in {path}: {exc}"
         raise ConfigError(msg) from exc
     except OSError as exc:
-        raise _cannot_read(path, exc) from exc
+        msg = f"config: cannot read {path}: {exc}"
+        raise ConfigError(msg) from exc
 
-    settings_table = _require_table(data, "settings")
-    host, user = _identity(settings_table)
-    password = _secret(settings_table, "password", "IDRAC_PASSWORD") or ""
-    settings_kwargs: dict[str, Any] = {
-        "host": host,
-        "user": user,
-        "password": password,
-        "curve": _curve(data),
-    }
-    for key in (
-        "poll_interval_s",
-        "read_failure_limit",
-        "step_down_hysteresis_s",
-        "metrics_port",
-    ):
-        value = _positive_or_default(settings_table, key)
-        if value is not None:
-            settings_kwargs[key] = value
-    ipmitool_path = _require(settings_table, "ipmitool_path", _is_str, "a string")
-    if ipmitool_path:
-        settings_kwargs["ipmitool_path"] = ipmitool_path
-    return Settings(**settings_kwargs)
+    raw_settings = data.get("settings")
+    settings_table = dict(raw_settings) if isinstance(raw_settings, dict) else {}
+    for name, env_key in _ENV_OVERRIDES:
+        # An empty env value counts as unset, same as absent.
+        env_value = os.environ.get(env_key)
+        if env_value:
+            settings_table[name] = env_value
+    try:
+        # [[curve]] is a top-level TOML table array, sibling of [settings].
+        return Settings.model_validate({**settings_table, "curve": data.get("curve")})
+    except ValidationError as exc:
+        msg = "; ".join(str(error["msg"]) for error in exc.errors())
+        raise ConfigError(msg) from exc
 
 
-class ConfigWatcher:
-    """mtime_ns-tracked hot-reload helper; caller owns the last-good Settings."""
-
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
-        try:
-            self._mtime_ns = self._path.stat().st_mtime_ns
-        except OSError as exc:
-            raise _cannot_read(path, exc) from exc
-
-    def changed(self) -> bool:
-        try:
-            return self._path.stat().st_mtime_ns != self._mtime_ns
-        except OSError:
-            return True
-
-    def reload(self) -> Settings:
-        # Stat before load so the recorded mtime never describes a version newer
-        # than what was parsed: a write racing the load leaves the file's mtime
-        # ahead of _mtime_ns, and changed() schedules another reload (the TOCTOU
-        # gap is benign by construction, not eliminated).
-        try:
-            mtime_ns = self._path.stat().st_mtime_ns
-        except OSError:
-            mtime_ns = None
-        settings = load_settings(self._path)
-        if mtime_ns is not None:
-            self._mtime_ns = mtime_ns
-        return settings
-
-
-__all__ = ["ConfigError", "ConfigWatcher", "DEFAULT_CURVE", "Settings", "load_settings"]
+__all__ = ["ConfigError", "DEFAULT_CURVE", "Settings", "load_settings"]
