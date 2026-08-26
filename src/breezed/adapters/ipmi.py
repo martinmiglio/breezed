@@ -10,9 +10,8 @@ import re
 import subprocess
 from collections.abc import Callable, Sequence
 
-from breezed.domain.ports import IpmiError
 from breezed.domain.settings import Settings
-from breezed.domain.types import FanPercent, TempC
+from breezed.domain.types import FanPercent, IpmiError, TempC
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 

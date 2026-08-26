@@ -10,9 +10,9 @@ from collections.abc import Callable, Sequence
 from typing import Protocol, cast
 
 from breezed.domain.curve import interpolate, validate_curve
-from breezed.domain.ports import FanCommander, IpmiError, TempReader
+from breezed.domain.ports import FanCommander, TempReader
 from breezed.domain.settings import Settings
-from breezed.domain.types import EventType, FanPercent, OperatingMode, make_fan_pct
+from breezed.domain.types import EventType, FanPercent, IpmiError, OperatingMode, make_fan_pct
 
 
 class EventSink(Protocol):
