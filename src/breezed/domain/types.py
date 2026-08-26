@@ -31,6 +31,10 @@ class DomainError(ValueError):
     """Shared base so config and ipmi errors can be caught as one validation family."""
 
 
+class IpmiError(DomainError):
+    """Raised by the IPMI adapter on subprocess / protocol failures."""
+
+
 class OperatingMode(StrEnum):
     """Domain vocabulary; members serialize via str() straight into JSON logs."""
 
@@ -57,6 +61,7 @@ __all__ = [
     "DomainError",
     "EventType",
     "FanPercent",
+    "IpmiError",
     "OperatingMode",
     "TempC",
     "make_fan_pct",

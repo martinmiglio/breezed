@@ -6,11 +6,7 @@ never on a concrete adapter. This file owns all Protocols.
 
 from typing import Protocol, runtime_checkable
 
-from breezed.domain.types import DomainError, FanPercent, TempC
-
-
-class IpmiError(DomainError):
-    """Messages carry short context plus an optional stderr snippet; never full argv."""
+from breezed.domain.types import FanPercent, TempC
 
 
 @runtime_checkable
@@ -25,4 +21,4 @@ class FanCommander(Protocol):
     def set_manual_pct(self, pct: FanPercent) -> None: ...
 
 
-__all__ = ["IpmiError", "TempReader", "FanCommander"]
+__all__ = ["TempReader", "FanCommander"]
