@@ -1,17 +1,15 @@
-"""Unprivileged systemd deployment staging and status.
+"""Unprivileged systemd deployment planning and status.
 
-``stage_install`` copies the runtime into a staging dir, relocates it to its
-final /opt paths in-process, and returns the exact privileged commands for the
-user to run themselves — breezed spawns no sudo/pkexec. ``daemon_status`` is
-the only execution path and stays unprivileged.
+The installer writes three small files into a staging dir and returns the
+exact privileged commands for the user to run themselves — breezed spawns no
+sudo/pkexec, and uv manages /opt directly so no runtime is ever copied by us.
+``daemon_status`` is the only execution path and stays unprivileged.
 """
 
-import datetime as dt
 import os
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
@@ -23,10 +21,7 @@ from breezed.types import DomainError
 
 SERVICE_NAME = "breezed"
 EXEC_PATH = "/usr/local/bin/breezed"
-ENV_MODE = 0o640
 STAGING_DIR = Path("/tmp/breezed-install")
-FINAL_RUNTIME = Path("/opt/breezed")
-FINAL_BASE_PYTHON = Path("/opt/breezed-python")
 
 _UNIT_STAMP_RE = re.compile(r"^# Installed by breezed (\S+) on ", re.MULTILINE)
 
@@ -41,16 +36,6 @@ IDRAC_PASSWORD=
 
 class DaemonError(DomainError):
     """Deployment failures with actionable messages; never raw OSError text."""
-
-
-def _venv_home(venv: Path) -> Path:
-    """The base interpreter bin dir, recorded in pyvenv.cfg as ``home``."""
-    for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
-        if line.startswith("home"):
-            _, _, value = line.partition("=")
-            return Path(value.strip())
-    msg = f"pyvenv.cfg in {venv} has no home entry"
-    raise DaemonError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,16 +109,6 @@ class DaemonStatus:
     binary_version: str
 
 
-def _render_unit() -> str:
-    template = _read_packaged("breezed.service.template")
-    installed_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
-    return (
-        template.replace("{version}", __version__)
-        .replace("{installed_at}", installed_at)
-        .replace("{exec_path}", EXEC_PATH)
-    )
-
-
 def _probe_flag(runner: CommandRunner, argv: list[str], ok_values: set[str]) -> bool:
     try:
         output = runner(argv)
@@ -173,164 +148,62 @@ def daemon_status(
     )
 
 
-def _ensure_not_deployed_runtime(source_prefix: Path) -> None:
-    """Refuse staging when the source prefix is inside the deploy target.
+def stage_files(staging_dir: Path = STAGING_DIR) -> list[str]:
+    """Wipe staging_dir and write the unit, env skeleton, and example config."""
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    staged = {
+        staging_dir / "breezed.service": _read_packaged("breezed.service.template"),
+        staging_dir / "breezed.env": _ENV_SKELETON,
+        staging_dir / "breezed.toml": _read_packaged("breezed.toml.example"),
+    }
+    try:
+        staging_dir.mkdir(parents=True)
+        for path, content in staged.items():
+            path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        msg = f"cannot write staged files into {staging_dir}: {exc}"
+        raise DaemonError(msg) from exc
+    return [str(path) for path in staged]
 
-    The live incident: /usr/local/bin/breezed shadowed ~/.local/bin, so the
-    stager ran from /opt/breezed and would have copied the deployed runtime
-    onto itself.
+
+def install_commands() -> list[str]:
+    """Privileged commands turning the staged files into a running service.
+
+    uv owns /opt/breezed and /opt/breezed-python via pinned env vars, so one
+    tool-install line replaces any manual runtime copying.
     """
-    prefix = source_prefix.resolve()
-    for target in (FINAL_RUNTIME, FINAL_BASE_PYTHON):
-        resolved = target.resolve()
-        if prefix == resolved or resolved in prefix.parents:
-            msg = (
-                f"this is the deployed runtime ({resolved}); stage installs from a "
-                "development install instead (e.g. ~/.local/bin/breezed)"
-            )
-            raise DaemonError(msg)
-
-
-def _default_source_prefix() -> Path:
-    """sys.prefix, but only when it actually holds an installed breezed runtime.
-
-    Under test runners the active prefix is pytest's own environment with no
-    ``bin/breezed``, so staging must never silently copy it.
-    """
-    prefix = Path(sys.prefix).resolve()
-    if not (prefix / "bin" / SERVICE_NAME).exists():
-        msg = "no installed breezed runtime found; generate installs from `uv tool install .`"
-        raise DaemonError(msg)
-    return prefix
-
-
-def _relocate_runtime(staged_venv: Path, src_venv: Path) -> None:
-    """Point the staged venv at its final /opt locations.
-
-    Must match the printed install commands exactly: the runtime lands at
-    /opt/breezed and the base interpreter at /opt/breezed-python. Shebangs are
-    rewritten only for entry points that referenced the source venv's own
-    interpreter; foreign scripts (and test fakes) pass through untouched.
-    """
-    cfg = staged_venv / "pyvenv.cfg"
-    lines = cfg.read_text(encoding="utf-8").splitlines(keepends=True)
-    rewritten = [
-        f"home = {FINAL_BASE_PYTHON}/bin\n" if line.startswith("home") else line for line in lines
-    ]
-    cfg.write_text("".join(rewritten), encoding="utf-8")
-
-    venv_bin_marker = f"{src_venv}/bin"
-    for entry in (staged_venv / "bin").iterdir():
-        if entry.is_symlink() and entry.name.startswith("python"):
-            # python/python3 point into the base install; retarget to its final home.
-            link_target = os.readlink(entry)
-            name = Path(link_target).name
-            entry.unlink()
-            os.symlink(f"{FINAL_BASE_PYTHON}/bin/{name}", entry)
-            continue
-        if not entry.is_file():
-            continue
-        if entry.name.startswith(("activate", "Activate")):
-            continue
-        with open(entry, "rb") as f:
-            if f.read(2) != b"#!":
-                continue
-        lines = entry.read_text(encoding="utf-8").splitlines(keepends=True)
-        if venv_bin_marker not in lines[0]:
-            continue
-        lines[0] = f"#!{FINAL_RUNTIME}/bin/python3\n"
-        entry.write_text("".join(lines), encoding="utf-8")
-
-
-def _install_commands(staging_dir: Path) -> list[str]:
-    s = str(staging_dir)
+    s = str(STAGING_DIR)
     return [
-        "sudo useradd --system --no-create-home --shell /usr/sbin/nologin breezed  # if missing",
-        f"sudo rm -rf {FINAL_RUNTIME} && sudo cp -a {s}/runtime {FINAL_RUNTIME}",
-        f"sudo rm -rf {FINAL_BASE_PYTHON} && sudo cp -a {s}/runtime-python {FINAL_BASE_PYTHON}",
-        f"sudo ln -sfn {FINAL_RUNTIME}/bin/breezed {EXEC_PATH}",
+        "sudo env UV_TOOL_DIR=/opt/breezed UV_TOOL_BIN_DIR=/usr/local/bin"
+        ' UV_PYTHON_INSTALL_DIR=/opt/breezed-python "$HOME/.local/bin/uv" tool install'
+        " ~/Projects/breezed --reinstall",
         f"sudo install -D {s}/breezed.service /etc/systemd/system/breezed.service",
-        f"sudo install -D {s}/breezed.toml /etc/breezed/breezed.toml  # skip if tuning kept",
-        f"sudo install -D -m {ENV_MODE:o} {s}/breezed.env /etc/breezed.env  # skip if secrets exist",  # noqa: E501
-        "sudoedit /etc/breezed.env  # set IDRAC_HOST / IDRAC_USER / IDRAC_PASSWORD",
-        "sudo systemctl daemon-reload && sudo systemctl enable --now breezed",
-        f"{EXEC_PATH} --version  # verify the installed runtime",
+        f"sudo install -D {s}/breezed.toml /etc/breezed/breezed.toml"
+        "        # skip if a tuned config exists",
+        f"sudo install -D {s}/breezed.env /etc/breezed.env"
+        "                  # skip if secrets already set",
+        "sudoedit /etc/breezed.env                                                          "
+        "# IDRAC_HOST / IDRAC_USER / IDRAC_PASSWORD",
+        "sudo systemctl daemon-reload",
+        "sudo systemctl enable --now breezed",
+        f"{EXEC_PATH} --version",
     ]
 
 
-def staged_uninstall_commands() -> list[str]:
-    """Privileged commands that stop and remove breezed; keeps user/env/config."""
+def uninstall_commands() -> list[str]:
+    """Privileged commands removing breezed; /etc/breezed.env and /etc/breezed/ are kept."""
     return [
         "sudo systemctl disable --now breezed",
-        f"sudo rm -f /etc/systemd/system/{SERVICE_NAME}.service {EXEC_PATH}",
+        f"sudo rm -f /etc/systemd/system/{SERVICE_NAME}.service",
+        'sudo env UV_TOOL_DIR=/opt/breezed UV_TOOL_BIN_DIR=/usr/local/bin "$HOME/.local/bin/uv"'
+        " tool uninstall breezed || sudo rm -rf /opt/breezed /opt/breezed-python",
         "sudo systemctl daemon-reload",
     ]
 
 
-@dataclass(frozen=True, slots=True)
-class StagedInstall:
-    commands: list[str]
-    staged_files: list[str]
-
-
-def stage_install(
-    staging_dir: Path = STAGING_DIR, *, source_prefix: Path | None = None
-) -> StagedInstall:
-    """Copy and relocate the runtime into staging_dir; no privileged side effects.
-
-    The staged runtime is relocated to its final /opt paths up front, so plain
-    copy-paste commands are all the privilege escalation the user needs. The
-    staged tree is verified statically — executing it would need /opt to exist
-    already, which only happens after the user runs those commands.
-    ``source_prefix`` defaults to sys.prefix but is only accepted when
-    it actually contains an installed breezed runtime; tests inject a minimal
-    fake prefix instead.
-    """
-    src_venv = (source_prefix if source_prefix is not None else _default_source_prefix()).resolve()
-    _ensure_not_deployed_runtime(src_venv)
-    home = _venv_home(src_venv)
-
-    shutil.rmtree(staging_dir, ignore_errors=True)
-    runtime = staging_dir / "runtime"
-    base_python = staging_dir / "runtime-python"
-    try:
-        shutil.copytree(src_venv, runtime, symlinks=True)
-        shutil.copytree(home.resolve().parent, base_python, symlinks=True)
-    except OSError as exc:
-        msg = f"cannot stage runtime into {staging_dir}: {exc}"
-        raise DaemonError(msg) from exc
-    _relocate_runtime(runtime, src_venv)
-
-    staged_files = [
-        str(staging_dir / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
-    ]
-    try:
-        (staging_dir / "breezed.service").write_text(_render_unit(), encoding="utf-8")
-        (staging_dir / "breezed.env").write_text(_ENV_SKELETON, encoding="utf-8")
-        (staging_dir / "breezed.toml").write_text(
-            _read_packaged("breezed.toml.example"), encoding="utf-8"
-        )
-    except OSError as exc:
-        msg = f"staging incomplete in {staging_dir}: {exc}"
-        raise DaemonError(msg) from exc
-    launcher = runtime / "bin" / SERVICE_NAME
-    if not launcher.is_file():
-        msg = f"staged runtime missing {runtime}/bin/{SERVICE_NAME}"
-        raise DaemonError(msg)
-    shebang = launcher.read_text(encoding="utf-8").splitlines()[0]
-    expected_shebang = f"#!{FINAL_RUNTIME}/bin/python3"
-    if shebang != expected_shebang:
-        msg = f"staged runtime shebang is {shebang!r}, expected {expected_shebang!r}"
-        raise DaemonError(msg)
-    staged_interpreter = base_python / "bin" / "python3"
-    if not staged_interpreter.exists():
-        msg = f"staged base python missing: {staged_interpreter} does not resolve"
-        raise DaemonError(msg)
-    return StagedInstall(commands=_install_commands(staging_dir), staged_files=staged_files)
-
-
 __all__ = [
     "EXEC_PATH",
+    "STAGING_DIR",
     "CommandRunner",
     "DaemonError",
     "DaemonStatus",
@@ -338,9 +211,8 @@ __all__ = [
     "InstallerPaths",
     "RealFileOps",
     "SERVICE_NAME",
-    "STAGING_DIR",
-    "StagedInstall",
     "daemon_status",
-    "stage_install",
-    "staged_uninstall_commands",
+    "install_commands",
+    "stage_files",
+    "uninstall_commands",
 ]

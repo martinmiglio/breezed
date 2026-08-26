@@ -34,9 +34,9 @@ breezed validate breezed.toml --probe               # check config; probe reads 
 The `daemon` subcommands manage the systemd deployment:
 
 ```sh
-breezed daemon install                # stage runtime+unit+config to /tmp, print the sudo commands
-breezed daemon status                 # unit state + installed-vs-running version drift
-breezed daemon uninstall              # print the commands; keeps user/env/config
+breezed daemon install                # stage unit+env+config to /tmp, print install commands
+breezed daemon status                 # report unit state and binary version
+breezed daemon uninstall              # print removal commands; keep env/config
 ```
 
 Exit codes: `0` ok, `1` runtime error (e.g. IPMI failure), `2` usage/config error.
@@ -45,35 +45,34 @@ Machine-readable output is always JSON on stdout; errors go to stderr as text.
 ## Deploy (systemd)
 
 systemd is the only deployment path — no containers. `daemon install` never
-escalates itself: it stages everything into `/tmp/breezed-install/`, smoke-tests
-the staged runtime, then prints a copy-paste block of plain sudo commands
-(bash/zsh/fish safe):
+escalates itself or copies a Python runtime. It stages only `breezed.service`,
+`breezed.env`, and `breezed.toml` in `/tmp/breezed-install/`, then prints a
+bash/zsh/fish-safe block for review. uv installs and manages the runtime directly
+under `/opt`:
 
 ```sh
 uv tool install .
 breezed daemon install
-# review, then paste the printed commands:
-sudo systemctl enable --now breezed
-sudoedit /etc/breezed.env          # fill IDRAC_HOST/IDRAC_USER/IDRAC_PASSWORD first
-sudo systemctl restart breezed     # pick up the credentials you just wrote
-journalctl -u breezed -f           # watch the first hour
+# review, then paste the printed commands in order
+# skip the config/env install lines if those files are already configured
+sudoedit /etc/breezed.env
+journalctl -u breezed -f
 ```
 
-Re-running `daemon install` re-stages a fresh runtime; re-pasting the block
-upgrades in place. The command list creates the dedicated `breezed` system
-user, installs the unit rendered from the template shipped inside breezed,
-writes an env skeleton for `/etc/breezed.env` only if absent — it never
-overwrites an existing env file or config — and copies the packaged example
-config (`breezed.toml.example`) to `/etc/breezed/breezed.toml` only if that
-file does not exist yet.
+The printed uv command sets `UV_TOOL_DIR=/opt/breezed`,
+`UV_TOOL_BIN_DIR=/usr/local/bin`, and
+`UV_PYTHON_INSTALL_DIR=/opt/breezed-python`, then installs the current checkout
+with `--reinstall`. The following commands install the static packaged unit and
+the staged config and environment skeleton. Skip the config and environment
+install commands when tuned or configured files already exist; those commands
+would otherwise overwrite them.
 
-**Upgrading**: after `uv tool upgrade breezed` (or reinstalling from source),
-run `breezed daemon install` again and re-paste the printed block, then
-`sudo systemctl restart breezed`. Local edits to `/etc/breezed/breezed.toml`
-survive upgrades (the config hot-reloads on mtime change anyway). `breezed daemon status` shows the
-version stamped into the installed unit next to the version of the running
-binary, so drift between "unit installed by" and "binary running as" is
-visible at a glance; if they disagree, re-run `daemon install`.
+**Upgrading**: update the checkout, run `breezed daemon install`, and re-paste
+the printed commands. The uv `tool install --reinstall` command replaces the
+runtime in `/opt`; skip the config and environment install lines to retain local
+settings, then restart via the printed `systemctl enable --now` command.
+`breezed daemon uninstall` prints the corresponding uv removal command and a
+fallback cleanup for `/opt`; `/etc/breezed/` and `/etc/breezed.env` remain.
 
 The metrics port is baked into the unit's `ExecStart` deliberately (netdata
 scrapes it). To run without metrics, edit the unit to drop
