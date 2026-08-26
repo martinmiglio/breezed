@@ -27,8 +27,9 @@ from breezed.daemon import (
     STAGING_DIR,
     DaemonError,
     daemon_status,
-    stage_install,
-    staged_uninstall_commands,
+    install_commands,
+    stage_files,
+    uninstall_commands,
 )
 from breezed.ipmi import IpmiClient, IpmiError
 from breezed.logs import LoggingEventSink, setup_logging
@@ -305,13 +306,13 @@ def daemon_install(
         Path, typer.Option("--staging-dir", help="Where the staged files are written")
     ] = STAGING_DIR,
 ) -> None:
-    """Stage runtime + unit + config into a temp dir; print the privileged commands."""
+    """Stage unit + env + config into a temp dir; print the privileged commands."""
     try:
-        staged = stage_install(staging_dir)
+        files = stage_files(staging_dir)
     except DaemonError as err:
         _fail(err, code=1)
-    _print_command_block(staged.commands, "Review, then run these commands to install:")
-    print(json.dumps({"event": "install_staged", "files": staged.staged_files}))
+    print(json.dumps({"event": "install_staged", "files": files}))
+    _print_command_block(install_commands(), "Review, then run these commands to install:")
 
 
 @daemon_app.command("status")
@@ -325,9 +326,10 @@ def daemon_status_command() -> None:
 
 @daemon_app.command("uninstall")
 def daemon_uninstall() -> None:
-    """Stop and remove the unit and shim; keeps the system user, env, and config."""
+    """Stop and remove the service and runtime; keeps /etc/breezed.env and /etc/breezed/."""
     _print_command_block(
-        staged_uninstall_commands(), "Review, then run these commands to uninstall:"
+        uninstall_commands(),
+        "Review, then run these commands to uninstall. /etc/breezed.env and /etc/breezed/ remain:",
     )
     print(json.dumps({"event": "uninstall_planned", "keeps": ["/etc/breezed.env", "/etc/breezed"]}))
 

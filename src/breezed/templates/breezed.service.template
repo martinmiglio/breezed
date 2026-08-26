@@ -1,5 +1,4 @@
-# Installed by breezed {version} on {installed_at}; re-run `breezed daemon install`
-# to refresh this file.
+# Installed by `breezed daemon install`; re-run it to refresh this file.
 [Unit]
 Description=breezed - curve-based iDRAC/IPMI fan controller
 After=network-online.target
@@ -7,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={exec_path} run --config /etc/breezed/breezed.toml --metrics-port 9762
+ExecStart=/usr/local/bin/breezed run --config /etc/breezed/breezed.toml --metrics-port 9762
 EnvironmentFile=-/etc/breezed.env
 Restart=always
 RestartSec=5

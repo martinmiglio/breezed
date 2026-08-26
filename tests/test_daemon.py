@@ -1,13 +1,7 @@
-"""Daemon deploy tests: staging, install command planning, and unprivileged status.
-
-stage_install is exercised directly (real copytree + relocation + smoke test
-into tmp_path); CLI daemon commands are exercised via CliRunner with staging
-dirs injected through --staging-dir.
-"""
+"""Daemon deployment staging, command planning, and status tests."""
 
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -15,24 +9,21 @@ from typer.testing import CliRunner
 
 import breezed
 from breezed import cli
-from breezed import daemon as daemon_module
 from breezed.cli import app
 from breezed.daemon import (
     EXEC_PATH,
-    FINAL_BASE_PYTHON,
-    FINAL_RUNTIME,
     DaemonError,
     DaemonStatus,
     InstallerPaths,
     daemon_status,
-    stage_install,
-    staged_uninstall_commands,
+    install_commands,
+    stage_files,
+    uninstall_commands,
 )
 
 UNIT_NAME = "breezed.service"
 STAMPED_UNIT = f"""\
-# Installed by breezed 9.9.9 on 2026-01-01T00:00:00+00:00; re-run `breezed daemon install`
-# to refresh this file.
+# Installed by breezed 9.9.9 on 2026-01-01T00:00:00+00:00
 [Service]
 ExecStart={EXEC_PATH} run
 """
@@ -40,7 +31,7 @@ ExecStart={EXEC_PATH} run
 
 class FakeFileOps:
     def __init__(self, files: dict[str, str] | None = None) -> None:
-        self.files: dict[Path, str] = {Path(name): body for name, body in (files or {}).items()}
+        self.files = {Path(name): body for name, body in (files or {}).items()}
 
     def read_text(self, path: Path) -> str:
         return self.files[path]
@@ -79,245 +70,164 @@ def paths(tmp_path: Path) -> InstallerPaths:
 
 
 @pytest.fixture
-def cli_runner():
+def cli_runner() -> CliRunner:
     return CliRunner()
 
 
-def test_status_reports_version_drift_when_stamped_unit_differs(paths: InstallerPaths):
+def test_status_reports_version_drift_when_stamped_unit_differs(paths: InstallerPaths) -> None:
     fs = FakeFileOps({str(paths.unit_path): STAMPED_UNIT})
-    fake_runner = FakeRunner(
+    runner = FakeRunner(
         {"systemctl is-active breezed": "active\n", "systemctl is-enabled breezed": "enabled\n"}
     )
 
-    status = daemon_status(paths, runner=fake_runner, fs=fs)
+    status = daemon_status(paths, runner=runner, fs=fs)
 
     assert status.unit_present is True
     assert status.active is True
     assert status.enabled is True
     assert status.unit_version == "9.9.9"
     assert status.binary_version == breezed.__version__
-    assert status.unit_version != status.binary_version
 
 
-def test_status_absent_unit_reports_all_clear(paths: InstallerPaths):
-    fs, fake_runner = FakeFileOps(), FakeRunner()
+def test_status_absent_unit_reports_all_clear(paths: InstallerPaths) -> None:
+    status = daemon_status(paths, runner=FakeRunner(), fs=FakeFileOps())
 
-    status = daemon_status(paths, runner=fake_runner, fs=fs)
+    assert status == DaemonStatus(False, False, False, None, breezed.__version__)
 
-    assert status == DaemonStatus(
-        unit_present=False,
-        active=False,
-        enabled=False,
-        unit_version=None,
-        binary_version=breezed.__version__,
+
+def test_status_is_unprivileged(paths: InstallerPaths) -> None:
+    runner = FakeRunner()
+    daemon_status(paths, runner=runner, fs=FakeFileOps())
+
+    assert all(
+        argv[:2] in (["systemctl", "is-active"], ["systemctl", "is-enabled"])
+        for argv in runner.argvs
     )
 
 
-def test_status_is_unprivileged_and_runs_no_privileged_commands(paths: InstallerPaths):
-    fs, fake_runner = FakeFileOps(), FakeRunner()
-    daemon_status(paths, runner=fake_runner, fs=fs)
-    for argv in fake_runner.argvs:
-        assert argv[0] == "systemctl" and argv[1] in ("is-active", "is-enabled")
-
-
-def test_status_probe_failure_reports_inactive(paths: InstallerPaths):
+def test_status_probe_failure_reports_inactive(paths: InstallerPaths) -> None:
     fs = FakeFileOps({str(paths.unit_path): STAMPED_UNIT})
-    fake_runner = FakeRunner(errors={"systemctl is-active breezed": "systemctl is-active failed"})
+    runner = FakeRunner(errors={"systemctl is-active breezed": "failed"})
 
-    status = daemon_status(paths, runner=fake_runner, fs=fs)
-
-    assert status.unit_present is True
-    assert status.active is False
+    assert daemon_status(paths, runner=runner, fs=fs).active is False
 
 
-@pytest.fixture
-def staging(tmp_path: Path) -> Path:
-    return tmp_path / "stage"
+def test_stage_files_wipes_directory_and_writes_exactly_three_files(tmp_path: Path) -> None:
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    (staging / "obsolete").write_text("old", encoding="utf-8")
 
+    staged = stage_files(staging)
 
-def make_fake_prefix(root: Path, version: str) -> Path:
-    """Minimal installed-runtime lookalike: no reliance on pytest's own env."""
-    prefix = root / "prefix"
-    base = root / "base"
-    (prefix / "bin").mkdir(parents=True)
-    (base / "bin").mkdir(parents=True)
-    (prefix / "pyvenv.cfg").write_text(f"home = {base}/bin\n", encoding="utf-8")
-    # Entry points carry a venv-interpreter shebang, like real console scripts;
-    # relocation rewrites it to the final /opt interpreter.
-    launcher = prefix / "bin" / "breezed"
-    launcher.write_text(f"#!{prefix}/bin/python3\necho breezed {version}\n", encoding="utf-8")
-    launcher.chmod(0o755)
-    os.symlink(sys.executable, base / "bin" / "python3")
-    os.symlink("../base/bin/python3", prefix / "bin" / "python3")
-    return prefix
-
-
-@pytest.fixture
-def fake_prefix(tmp_path: Path) -> Path:
-    return make_fake_prefix(tmp_path, breezed.__version__)
-
-
-def test_default_source_prefix_rejected_without_installed_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    with pytest.raises(DaemonError, match="no installed breezed runtime"):
-        stage_install(tmp_path / "stage")
-
-
-def test_stage_install_stages_unit_env_config_and_runtime(staging: Path, fake_prefix: Path):
-    stage_install(staging, source_prefix=fake_prefix)
-
-    assert (
-        (staging / "breezed.service")
-        .read_text(encoding="utf-8")
-        .startswith("# Installed by breezed")
-    )
+    names = ["breezed.service", "breezed.env", "breezed.toml"]
+    assert sorted(path.name for path in staging.iterdir()) == sorted(names)
+    assert staged == [str(staging / name) for name in names]
     assert "IDRAC_HOST=" in (staging / "breezed.env").read_text(encoding="utf-8")
     assert "[settings]" in (staging / "breezed.toml").read_text(encoding="utf-8")
-    assert (staging / "runtime" / "bin" / "breezed").exists()
-    assert (staging / "runtime-python" / "bin").is_dir()
 
 
-def test_stage_install_relocates_to_final_opt_paths(staging: Path, fake_prefix: Path):
-    stage_install(staging, source_prefix=fake_prefix)
+def test_staged_unit_is_static_and_has_expected_exec_start(tmp_path: Path) -> None:
+    staging = tmp_path / "stage"
+    stage_files(staging)
 
-    cfg = (staging / "runtime" / "pyvenv.cfg").read_text(encoding="utf-8")
-    assert f"home = {FINAL_BASE_PYTHON}/bin" in cfg
-    shebang = (staging / "runtime" / "bin" / "breezed").read_text(encoding="utf-8").splitlines()[0]
-    assert shebang == f"#!{FINAL_RUNTIME}/bin/python3"
-    python_link = staging / "runtime" / "bin" / "python3"
-    assert os.readlink(python_link) == f"{FINAL_BASE_PYTHON}/bin/python3"
-
-
-def test_staged_runtime_passes_static_verification(staging: Path, fake_prefix: Path):
-    staged = stage_install(staging, source_prefix=fake_prefix)
-
-    assert staged.commands[-1].startswith(f"{EXEC_PATH} --version")
-    launcher = staging / "runtime" / "bin" / "breezed"
-    assert launcher.is_file()
-    interpreter = staging / "runtime-python" / "bin" / "python3"
-    assert interpreter.exists()
-
-
-def test_stage_install_rejects_unrelocated_launcher_shebang(
-    staging: Path, tmp_path: Path, fake_prefix: Path
-):
-    # Tamper with the source launcher so relocation legitimately skips it.
-    launcher = fake_prefix / "bin" / "breezed"
-    launcher.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-
-    with pytest.raises(DaemonError, match="staged runtime shebang"):
-        stage_install(staging, source_prefix=fake_prefix)
-
-
-def test_stage_install_returns_plain_copy_paste_commands(staging: Path, fake_prefix: Path):
-    staged = stage_install(staging, source_prefix=fake_prefix)
-
-    joined = "\n".join(staged.commands)
-    for fragment in (
-        "useradd --system",
-        f"cp -a {staging}/runtime {FINAL_RUNTIME}",
-        f"ln -sfn {FINAL_RUNTIME}/bin/breezed {EXEC_PATH}",
-        "install -D",
-        "systemctl daemon-reload && sudo systemctl enable --now breezed",
-        "sudoedit /etc/breezed.env",
-    ):
-        assert fragment in joined
-    assert all(
-        c.split()[0] in ("sudo", "sudoedit") or c.startswith(f"{EXEC_PATH} --version")
-        for c in staged.commands
+    unit = (staging / "breezed.service").read_text(encoding="utf-8")
+    assert "{" not in unit and "}" not in unit
+    assert (
+        "ExecStart=/usr/local/bin/breezed run --config /etc/breezed/breezed.toml "
+        "--metrics-port 9762" in unit
     )
-    assert staged.staged_files == [
-        str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
-    ]
 
 
-def test_stage_refused_when_source_is_deployed_runtime(
-    staging: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    deployed = tmp_path / "opt" / "breezed"
-    monkeypatch.setattr(daemon_module, "FINAL_RUNTIME", deployed)
-    monkeypatch.setattr(daemon_module, "FINAL_BASE_PYTHON", tmp_path / "opt" / "breezed-python")
-    with pytest.raises(DaemonError, match="deployed runtime"):
-        stage_install(staging, source_prefix=deployed)
+def test_install_commands_use_uv_opt_layout_and_protect_existing_state() -> None:
+    commands = "\n".join(install_commands())
+
+    assert "UV_TOOL_DIR=/opt/breezed" in commands
+    assert "UV_TOOL_BIN_DIR=/usr/local/bin" in commands
+    assert "UV_PYTHON_INSTALL_DIR=/opt/breezed-python" in commands
+    assert "tool install ~/Projects/breezed --reinstall" in commands
+    assert "skip if a tuned config exists" in commands
+    assert "skip if secrets already set" in commands
+    assert "sudo systemctl enable --now breezed" in commands
 
 
-def test_uninstall_commands_stop_remove_and_keep_state():
-    commands = staged_uninstall_commands()
+def test_uninstall_commands_remove_uv_runtime_and_keep_configuration() -> None:
+    commands = uninstall_commands()
+    joined = "\n".join(commands)
 
-    assert any("systemctl disable --now breezed" in c for c in commands)
-    assert any("rm -f" in c and "breezed.service" in c and EXEC_PATH in c for c in commands)
-    assert any("daemon-reload" in c for c in commands)
+    assert commands[0] == "sudo systemctl disable --now breezed"
+    assert "sudo rm -f /etc/systemd/system/breezed.service" in commands
+    assert "UV_TOOL_DIR=/opt/breezed UV_TOOL_BIN_DIR=/usr/local/bin" in joined
+    assert "tool uninstall breezed || sudo rm -rf /opt/breezed /opt/breezed-python" in joined
+    assert commands[-1] == "sudo systemctl daemon-reload"
 
 
-def test_help_lists_daemon_subcommands(cli_runner: CliRunner):
+def test_help_lists_daemon_subcommands(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(app, ["daemon", "--help"], catch_exceptions=False)
     assert result.exit_code == 0
-    for name in ("install", "status", "uninstall"):
-        assert name in result.output
+    assert all(name in result.output for name in ("install", "status", "uninstall"))
 
 
-def test_daemon_install_stages_into_dir_and_prints_json_event(
-    cli_runner: CliRunner,
-    staging: Path,
-    fake_prefix: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    def injected(stage_dir: Path) -> object:
-        return stage_install(stage_dir, source_prefix=fake_prefix)
-
-    monkeypatch.setattr(cli, "stage_install", injected)
+def test_daemon_install_prints_json_then_commands(cli_runner: CliRunner, tmp_path: Path) -> None:
+    staging = tmp_path / "stage"
     result = cli_runner.invoke(
         app, ["daemon", "install", "--staging-dir", str(staging)], catch_exceptions=False
     )
+
     assert result.exit_code == 0
-    payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["event"] == "install_staged"
-    assert payload["files"] == [
-        str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
-    ]
-    assert "sudo systemctl" in result.output
+    payload = json.loads(result.stdout.splitlines()[0])
+    assert payload == {
+        "event": "install_staged",
+        "files": [
+            str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
+        ],
+    }
+    assert "Review, then run these commands" in result.output
 
 
-def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner):
-    result = cli_runner.invoke(app, ["daemon", "install", "--start"])
-    assert result.exit_code != 0
+def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner) -> None:
+    assert cli_runner.invoke(app, ["daemon", "install", "--start"]).exit_code != 0
 
 
-def test_daemon_install_deployed_runtime_error_exits_1(
+def test_daemon_install_staging_error_exits_1(
     cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-):
-    def boom(staging_dir: Path) -> object:
-        raise DaemonError("this is the deployed runtime (/opt/breezed)")
+) -> None:
+    def boom(_staging_dir: Path) -> list[str]:
+        raise DaemonError("cannot stage files")
 
-    monkeypatch.setattr(cli, "stage_install", boom)
+    monkeypatch.setattr(cli, "stage_files", boom)
     result = cli_runner.invoke(app, ["daemon", "install"])
     assert result.exit_code == 1
-    assert "deployed runtime" in result.stderr
+    assert "cannot stage files" in result.stderr
 
 
-def test_daemon_uninstall_prints_command_plan(cli_runner: CliRunner):
+def test_daemon_uninstall_prints_plan_and_retained_state(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(app, ["daemon", "uninstall"], catch_exceptions=False)
+
     assert result.exit_code == 0
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["event"] == "uninstall_planned"
-    assert "/etc/breezed.env" in payload["keeps"]
-    assert "systemctl disable --now" in result.output
-
-
-def test_daemon_status_prints_report_json_exit_0(cli_runner: CliRunner, monkeypatch):
-    def fake_status(**kwargs: object) -> DaemonStatus:
-        return DaemonStatus(True, False, True, "0.1.0", "0.2.0")
-
-    monkeypatch.setattr(cli, "daemon_status", fake_status)
-    result = cli_runner.invoke(app, ["daemon", "status"], catch_exceptions=False)
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
     assert payload == {
+        "event": "uninstall_planned",
+        "keeps": ["/etc/breezed.env", "/etc/breezed"],
+    }
+    assert "systemctl disable --now" in result.output
+    assert "/etc/breezed.env and /etc/breezed/" in result.output
+    assert "remain:" in result.output
+
+
+def test_daemon_status_prints_report_json_exit_0(
+    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli, "daemon_status", lambda: DaemonStatus(True, False, True, None, "0.2.0")
+    )
+
+    result = cli_runner.invoke(app, ["daemon", "status"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
         "unit_present": True,
         "active": False,
         "enabled": True,
-        "unit_version": "0.1.0",
+        "unit_version": None,
         "binary_version": "0.2.0",
     }
