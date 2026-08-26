@@ -340,6 +340,7 @@ class SpeedPolicy(Protocol):
 
     def target_pct(self, temp_c: TempC, settings: Settings) -> int | None: ...
 
+
 # src/breezed/policy.py
 from dataclasses import dataclass
 
@@ -384,10 +385,10 @@ class EventSink(Protocol):
 
 
 class Controller:
-    _state: ControlState                 # starts UNKNOWN
+    _state: ControlState  # starts UNKNOWN
     _last_pct: FanPercent | None
-    _failure_streak: int                 # starts 0
-    _pending_down: tuple[FanPercent, float] | None   # (target pct, first-below ts)
+    _failure_streak: int  # starts 0
+    _pending_down: tuple[FanPercent, float] | None  # (target pct, first-below ts)
 
     def __init__(
         self,
@@ -397,10 +398,10 @@ class Controller:
         sink: EventSink,
         *,
         clock: Callable[[], float] = time.monotonic,
-        policy: SpeedPolicy | None = None,   # defaults to CurvePolicy()
+        policy: SpeedPolicy | None = None,  # defaults to CurvePolicy()
     ) -> None: ...
 
     def tick(self) -> None: ...
-    def shutdown(self) -> None: ...                       # best-effort AUTO restore
+    def shutdown(self) -> None: ...  # best-effort AUTO restore
     def replace_settings(self, new_settings: Settings) -> bool: ...  # False keeps last-good
 ```

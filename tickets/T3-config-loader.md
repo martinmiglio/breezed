@@ -199,9 +199,9 @@ DEFAULT_CURVE: tuple[CurvePoint, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    host: str                        # required: [settings].host or IDRAC_HOST
-    user: str                        # required: [settings].user or IDRAC_USER
-    password: str                    # env-only (IDRAC_PASSWORD); may be ""
+    host: str  # required: [settings].host or IDRAC_HOST
+    user: str  # required: [settings].user or IDRAC_USER
+    password: str  # env-only (IDRAC_PASSWORD); may be ""
     curve: tuple[CurvePoint, ...]
     poll_interval_s: int = 10
     read_failure_limit: int = 3
@@ -222,8 +222,8 @@ class ConfigWatcher:
     """mtime_ns-tracked hot-reload helper; caller owns the last-good Settings."""
 
     def __init__(self, path: str | Path) -> None: ...
-    def changed(self) -> bool: ...          # vanished file counts as changed
-    def reload(self) -> Settings: ...       # mtime refreshed on success ONLY
+    def changed(self) -> bool: ...  # vanished file counts as changed
+    def reload(self) -> Settings: ...  # mtime refreshed on success ONLY
 
 
 __all__ = ["ConfigError", "DEFAULT_CURVE", "Settings", "load_settings", "ConfigWatcher"]

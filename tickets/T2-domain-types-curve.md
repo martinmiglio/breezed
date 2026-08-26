@@ -144,9 +144,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import NewType
 
-TempC = NewType("TempC", int)            # sensor readings (max CPU temp from SDR)
+TempC = NewType("TempC", int)  # sensor readings (max CPU temp from SDR)
 FanPercent = NewType("FanPercent", int)  # duty cycle, validated 1..100 at construction
-Celsius = NewType("Celsius", int)        # curve point abscissas — distinct from TempC
+Celsius = NewType("Celsius", int)  # curve point abscissas — distinct from TempC
 
 
 def make_fan_pct(value: int) -> FanPercent:

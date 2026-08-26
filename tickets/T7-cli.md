@@ -71,16 +71,19 @@ against injected fake clients — no monkeypatching, no real subprocesses, no sl
    # shapes, so the factory's return annotation is the concrete adapter type.
    ClientFactory = Callable[[Settings], IpmiClient]
 
+
    @dataclass(frozen=True)
    class AppDeps:
        build_client: ClientFactory
        sleep_interruptible: Callable[[threading.Event, float], bool]
+
 
    def _default_deps() -> AppDeps:
        return AppDeps(
            build_client=lambda settings: IpmiClient(settings),
            sleep_interruptible=lambda stop, timeout: stop.wait(timeout),
        )
+
 
    deps = _default_deps()
    ```
