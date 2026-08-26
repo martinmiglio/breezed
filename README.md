@@ -3,9 +3,11 @@
 Curve-based fan controller for Dell PowerEdge servers via iDRAC/IPMI.
 Python 3.13 · uv · ruff · ty.
 
-breezed replaces a single static fan speed with a multi-point temperature
-curve and linear interpolation between points, so homelab racks stay quiet at
-idle and cool under load. Above the top curve point it hands control back to
+Source: [github.com/martinmiglio/breezed](https://github.com/martinmiglio/breezed)
+
+breezed is a curve-based fan controller for Dell PowerEdge servers, driving
+iDRAC/IPMI with a multi-point temperature curve and linear interpolation between
+points so homelab racks stay quiet at idle and cool under load. Above the top curve point it hands control back to
 iDRAC's own automatic thermal management — the safety net is always one degree
 away. Logs are JSON on stdout; a Prometheus-format metrics socket is opt-in;
 adapters (IPMI transport) and speed policies (curve today, PID later) sit
@@ -13,10 +15,20 @@ behind small Protocols, so either can be swapped without touching the core.
 
 ## Install
 
-From a checkout, run one command and enter your password once:
+From PyPI:
 
 ```sh
-uv run breezed daemon install
+pip install breezed
+# or
+uv tool install breezed
+```
+
+To deploy as a systemd service (the `breezed` binary needs privileges to talk to
+iDRAC; `daemon install` stages the unit and re-execs under sudo once), run one
+command and enter your password once:
+
+```sh
+breezed daemon install
 ```
 
 `daemon install` stages the unit/env/config, then re-executes itself via sudo to
@@ -39,7 +51,7 @@ breezed validate breezed.toml --probe               # check config; probe reads 
 The `daemon` subcommands manage the systemd deployment:
 
 ```sh
-uv run breezed daemon install         # one command, one sudo prompt
+breezed daemon install         # one command, one sudo prompt
 breezed daemon install --dry-run      # print the privileged steps without escalating
 breezed daemon status                 # report unit state and binary version
 breezed daemon uninstall              # one command, one sudo prompt; keeps env/config
@@ -56,7 +68,7 @@ directory, prints the privileged steps, then re-executes itself once via sudo
 to perform them. uv installs and manages the runtime directly under `/opt`:
 
 ```sh
-uv run breezed daemon install
+breezed daemon install
 # one sudo password prompt; then:
 sudoedit /etc/breezed.env
 journalctl -u breezed -f
@@ -81,7 +93,7 @@ The config and environment install steps run on first installation only and are
 skipped when those files already exist, so upgrades never overwrite tuned config
 or secrets.
 
-**Upgrading**: update the checkout and run `uv run breezed daemon install` again.
+**Upgrading**: update the checkout and run `breezed daemon install` again.
 The uv `tool install --reinstall` step replaces the runtime in `/opt`; the config
 and environment steps are skipped because those files already exist. `breezed
 daemon uninstall` mirrors install: one sudo prompt to disable and remove the
@@ -91,10 +103,6 @@ The metrics port is baked into the unit's `ExecStart` deliberately (netdata
 scrapes it). To run without metrics, edit the unit to drop
 `--metrics-port 9762` and `systemctl daemon-reload && systemctl restart
 breezed`; note your edit will be overwritten by the next `daemon install`.
-
-> **Migrating from the legacy C# controller on mmsrv?** Stop and disable the old
-> JDMallen.IPMITempMonitor compose stack first — two controllers fighting over
-> one iDRAC flip fan mode on every poll.
 
 ## Config example
 
