@@ -267,7 +267,7 @@ daemon_app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 def _render_to_output(renderer: Callable[..., str], **kwargs: object) -> None:
     try:
-        print(renderer(**kwargs))
+        typer.secho(renderer(**kwargs), fg=typer.colors.CYAN)
     except DaemonError as err:
         _fail(err, code=1)
 
