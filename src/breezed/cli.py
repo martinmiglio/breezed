@@ -8,22 +8,23 @@ reserved for JSON/machine output. Kept free of module-level side effects beyond
 
 import json
 import signal
-import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, NoReturn
 
+import rich.console
 import typer
 
-from breezed.config import ConfigError, ConfigWatcher, Settings, load_settings
+from breezed.config import ConfigError, Settings, load_settings
 from breezed.controller import Controller, EventSink
 from breezed.curve import interpolate
 from breezed.ipmi import IpmiClient, IpmiError
 from breezed.logs import LoggingEventSink, setup_logging
 from breezed.metrics import MetricsState, start_metrics_server
 from breezed.types import EventType, FanPercent, OperatingMode, TempC, make_fan_pct
+from breezed.watcher import ConfigWatcher
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
@@ -42,7 +43,7 @@ __all__ = ["app", "deps"]
 
 
 def _fail(err: Exception, *, code: int) -> NoReturn:
-    print(f"breezed: {err}", file=sys.stderr)
+    typer.secho(f"breezed: {err}", fg=typer.colors.RED, err=True)
     raise typer.Exit(code=code) from err
 
 
@@ -204,13 +205,14 @@ def status(
         _fail(err, code=1)
     target = interpolate(settings.curve, temp)
     if verbose:
-        lines = [f"CPU max: {temp}C"]
-        lines.extend(f"{name}: {rpm} RPM" for name, rpm in rpms)
+        console = rich.console.Console()
+        console.print(f"CPU max: {temp}C", style="bold")
+        for name, rpm in rpms:
+            console.print(f"{name}: {rpm} RPM")
         if target is None:
-            lines.append("Curve target: auto (above curve)")
+            console.print("Curve target: auto (above curve)", style="cyan")
         else:
-            lines.append(f"Curve target: {target}% (manual)")
-        print("\n".join(lines))
+            console.print(f"Curve target: {target}% (manual)", style="cyan")
     else:
         print(json.dumps({"temp_c": temp, "fan_rpms": rpms, "target_pct": target}))
 
