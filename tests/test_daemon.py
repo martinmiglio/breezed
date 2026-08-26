@@ -138,6 +138,24 @@ def test_staged_unit_is_static_and_has_expected_exec_start(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize("make_path", ["file", "symlink"])
+def test_stage_files_replaces_non_directory_at_staging_path(tmp_path: Path, make_path: str) -> None:
+    staging = tmp_path / "stage"
+    if make_path == "file":
+        staging.write_text("junk", encoding="utf-8")
+    else:
+        (tmp_path / "target").mkdir()
+        staging.symlink_to(tmp_path / "target", target_is_directory=True)
+
+    staged = stage_files(staging)
+
+    assert staging.is_dir()
+    assert not staging.is_symlink()
+    names = ["breezed.service", "breezed.env", "breezed.toml"]
+    assert sorted(path.name for path in staging.iterdir()) == sorted(names)
+    assert staged == [str(staging / name) for name in names]
+
+
 def test_install_commands_use_uv_opt_layout_and_protect_existing_state() -> None:
     command_list = install_commands()
     commands = "\n".join(command_list)

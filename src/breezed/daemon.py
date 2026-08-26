@@ -148,16 +148,29 @@ def daemon_status(
     )
 
 
+def _remove_path(path: Path) -> None:
+    """Remove a file, symlink, or directory, tolerating absence.
+
+    ``shutil.rmtree`` refuses symlinks and raises on plain files, so those would
+    otherwise survive with ``ignore_errors=True`` and collide with the mkdir
+    that follows.
+    """
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def stage_files(staging_dir: Path = STAGING_DIR) -> list[str]:
     """Wipe staging_dir and write the unit, env skeleton, and example config."""
-    shutil.rmtree(staging_dir, ignore_errors=True)
+    _remove_path(staging_dir)
     staged = {
         staging_dir / "breezed.service": _read_packaged("breezed.service.template"),
         staging_dir / "breezed.env": _ENV_SKELETON,
         staging_dir / "breezed.toml": _read_packaged("breezed.toml.example"),
     }
     try:
-        staging_dir.mkdir(parents=True)
+        staging_dir.mkdir(parents=True, exist_ok=True)
         for path, content in staged.items():
             path.write_text(content, encoding="utf-8")
     except OSError as exc:
