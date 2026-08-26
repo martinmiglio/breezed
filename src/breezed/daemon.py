@@ -305,7 +305,9 @@ def _enable_start(runner: CommandRunner) -> StepOutcome:
     return StepOutcome.DONE
 
 
-def _disable_now(runner: CommandRunner) -> StepOutcome:
+def _disable_now(runner: CommandRunner, fs: FileOps, paths: InstallerPaths) -> StepOutcome:
+    if fs.stat(paths.unit_path) is None:
+        return StepOutcome.SKIPPED
     runner(["systemctl", "disable", "--now", SERVICE_NAME])
     return StepOutcome.DONE
 
@@ -363,7 +365,7 @@ def build_remove_steps(
 ) -> list[Step]:
     """The fixed uninstall sequence; /etc/breezed.env and /etc/breezed/ are kept."""
     return [
-        Step("systemctl disable --now breezed", lambda: _disable_now(runner)),
+        Step("systemctl disable --now breezed", lambda: _disable_now(runner, fs, paths)),
         Step("remove /etc/systemd/system/breezed.service", lambda: _rm_unit(runner, paths)),
         Step("uv tool uninstall breezed", lambda: _uninstall_runtime(runner, uv)),
         Step("systemctl daemon-reload", lambda: _daemon_reload(runner)),

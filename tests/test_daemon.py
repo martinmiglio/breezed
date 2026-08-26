@@ -292,11 +292,28 @@ def test_apply_skips_user_config_and_env_when_present(
 def test_remove_runs_steps(paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     runner = FakeRunner()
+    fs = FakeFileOps({str(paths.unit_path): "unit"})
 
-    remove("/usr/local/bin/uv", paths=paths, runner=runner)
+    remove("/usr/local/bin/uv", paths=paths, runner=runner, fs=fs)
 
     assert [argv for argv, _env in runner.argvs] == [
         ["systemctl", "disable", "--now", "breezed"],
+        ["rm", "-f", str(paths.unit_path)],
+        ["/usr/local/bin/uv", "tool", "uninstall", "breezed"],
+        ["systemctl", "daemon-reload"],
+    ]
+
+
+def test_remove_skips_disable_when_unit_absent(
+    paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    runner = FakeRunner()
+
+    results = remove("/usr/local/bin/uv", paths=paths, runner=runner, fs=FakeFileOps())
+
+    assert dict(results)["systemctl disable --now breezed"] is StepOutcome.SKIPPED
+    assert [argv for argv, _env in runner.argvs] == [
         ["rm", "-f", str(paths.unit_path)],
         ["/usr/local/bin/uv", "tool", "uninstall", "breezed"],
         ["systemctl", "daemon-reload"],
@@ -308,8 +325,9 @@ def test_remove_runtime_falls_back_to_rm_on_uninstall_failure(
 ) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     runner = FakeRunner(errors={"/usr/local/bin/uv tool uninstall breezed": "boom"})
+    fs = FakeFileOps({str(paths.unit_path): "unit"})
 
-    remove("/usr/local/bin/uv", paths=paths, runner=runner)
+    remove("/usr/local/bin/uv", paths=paths, runner=runner, fs=fs)
 
     assert ["rm", "-rf", "/opt/breezed", "/opt/breezed-python"] in [
         argv for argv, _env in runner.argvs
