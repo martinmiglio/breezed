@@ -6,7 +6,7 @@ here so they apply uniformly to every target the curve produces.
 """
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Protocol, cast
 
 from breezed.domain.curve import interpolate, validate_curve
@@ -27,25 +27,29 @@ class Controller:
         reader: TempReader,
         commander: FanCommander,
         settings: Settings,
-        sink: EventSink,
+        sinks: Sequence[EventSink],
         *,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._reader = reader
         self._commander = commander
         self._settings = settings
-        self._sink = sink
+        self._sinks = sinks
         self._clock = clock
         self._state = OperatingMode.UNKNOWN
         self._last_pct: FanPercent | None = None
         self._failure_streak = 0
         self._pending_down: tuple[FanPercent, float] | None = None
 
+    def _emit(self, event: EventType, /, **fields: object) -> None:
+        for sink in self._sinks:
+            sink.emit(event, **fields)
+
     def _force_auto(self, reason: str, **fields: object) -> None:
         old = self._state.value
         self._commander.enable_auto()
         self._state = OperatingMode.AUTO
-        self._sink.emit(
+        self._emit(
             EventType.MODE_CHANGE,
             **{"from": old},
             to=OperatingMode.AUTO.value,
@@ -60,13 +64,13 @@ class Controller:
         self._state = OperatingMode.MANUAL
         self._last_pct = pct
         self._pending_down = None
-        self._sink.emit(
+        self._emit(
             EventType.MODE_CHANGE,
             **{"from": old},
             to=OperatingMode.MANUAL.value,
             reason="temp_under_curve",
         )
-        self._sink.emit(
+        self._emit(
             EventType.SPEED_CHANGE,
             fan_pct=pct,
             target_pct=target,
@@ -76,7 +80,7 @@ class Controller:
     def _gate_downward(self, target: int, pct: FanPercent) -> None:
         if self._pending_down is None:
             self._pending_down = (pct, self._clock())
-            self._sink.emit(
+            self._emit(
                 EventType.HYSTERESIS_WAIT,
                 target_pct=target,
                 hysteresis_s=self._settings.step_down_hysteresis_s,
@@ -86,7 +90,7 @@ class Controller:
             self._commander.set_manual_pct(applied)
             self._last_pct = applied
             self._pending_down = None
-            self._sink.emit(
+            self._emit(
                 EventType.SPEED_CHANGE,
                 fan_pct=applied,
                 target_pct=target,
@@ -98,7 +102,7 @@ class Controller:
             temp = self._reader.read_max_cpu_temp()
         except IpmiError as exc:
             self._failure_streak += 1
-            self._sink.emit(EventType.IPMI_ERROR, failures=self._failure_streak, error=str(exc))
+            self._emit(EventType.IPMI_ERROR, failures=self._failure_streak, error=str(exc))
             if (
                 self._failure_streak >= self._settings.read_failure_limit
                 and self._state is not OperatingMode.AUTO
@@ -117,7 +121,7 @@ class Controller:
             try:
                 pct = make_fan_pct(target)
             except ValueError as exc:
-                self._sink.emit(EventType.CONFIG_ERROR, error=str(exc))
+                self._emit(EventType.CONFIG_ERROR, error=str(exc))
             else:
                 if self._state is not OperatingMode.MANUAL:
                     self._enter_manual(pct, target)
@@ -127,7 +131,7 @@ class Controller:
                         self._commander.set_manual_pct(pct)
                         self._last_pct = pct
                         self._pending_down = None
-                        self._sink.emit(
+                        self._emit(
                             EventType.SPEED_CHANGE,
                             fan_pct=pct,
                             target_pct=target,
@@ -138,7 +142,7 @@ class Controller:
                     else:
                         self._pending_down = None
 
-        self._sink.emit(
+        self._emit(
             EventType.POLL,
             temp_c=temp,
             fan_pct=self._last_pct,
@@ -153,14 +157,14 @@ class Controller:
         try:
             self._force_auto("shutdown")
         except IpmiError as exc:
-            self._sink.emit(EventType.IPMI_ERROR, error=str(exc))
+            self._emit(EventType.IPMI_ERROR, error=str(exc))
 
     def replace_settings(self, new_settings: Settings) -> bool:
         """Swap in hot-reloaded settings; False (plus CONFIG_ERROR event) on invalid curve."""
         try:
             validate_curve(new_settings.curve)
         except ValueError as exc:
-            self._sink.emit(EventType.CONFIG_ERROR, error=str(exc))
+            self._emit(EventType.CONFIG_ERROR, error=str(exc))
             return False
         self._settings = new_settings
         self._pending_down = None

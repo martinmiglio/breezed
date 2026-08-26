@@ -28,7 +28,7 @@ from breezed.adapters.watcher import ConfigWatcher
 from breezed.application.controller import Controller, EventSink
 from breezed.domain.curve import interpolate
 from breezed.domain.settings import Settings
-from breezed.domain.types import EventType, FanPercent, OperatingMode, TempC, make_fan_pct
+from breezed.domain.types import EventType, make_fan_pct
 from breezed.entry.common import _fail
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
@@ -76,28 +76,6 @@ def _connect(config: Path) -> tuple[Settings, IpmiClient]:
         return settings, deps.build_client(settings)
     except IpmiError as err:
         _fail(err, code=1)
-
-
-class _MetricsSink:
-    """Thin EventSink wrapper: forwards to LoggingEventSink, mirrors counters."""
-
-    def __init__(self, base: EventSink, state: MetricsState | None) -> None:
-        self._base = base
-        self._state = state
-
-    def emit(self, event: EventType, /, **fields: object) -> None:
-        self._base.emit(event, **fields)
-        if self._state is None:
-            return
-        if event is EventType.IPMI_ERROR:
-            self._state.record_ipmi_error()
-        elif event is EventType.POLL:
-            temp_c = fields.get("temp_c")
-            fan_pct = fields.get("fan_pct")
-            mode = fields.get("mode")
-            if isinstance(temp_c, int) and isinstance(mode, str):
-                pct: FanPercent | None = FanPercent(fan_pct) if isinstance(fan_pct, int) else None
-                self._state.record_poll(TempC(temp_c), pct, OperatingMode(mode))
 
 
 def _install_signal_handlers(stop_event: threading.Event) -> None:
@@ -153,34 +131,41 @@ def _run_body(config: Path, metrics_port: int | None) -> None:
         state = MetricsState()
         server = start_metrics_server(port, state)
 
-    sink = _MetricsSink(LoggingEventSink(), state)
+    sinks: list[EventSink] = [LoggingEventSink()]
+    if state is not None:
+        sinks.append(state)
+
+    def emit_all(event: EventType, /, **fields: object) -> None:
+        for s in sinks:
+            s.emit(event, **fields)
+
     current_settings = settings
     controller = None
 
     stop_event = threading.Event()
     _install_signal_handlers(stop_event)
 
-    sink.emit(EventType.STARTUP)
+    emit_all(EventType.STARTUP)
     try:
         client = deps.build_client(current_settings)
-        controller = Controller(client, client, current_settings, sink)
+        controller = Controller(client, client, current_settings, sinks)
         while not deps.sleep_interruptible(stop_event, current_settings.poll_interval_s):
             controller.tick()
             if watcher.changed():
                 try:
                     new_settings = watcher.reload()
                 except ConfigError as err:
-                    sink.emit(EventType.CONFIG_ERROR, error=str(err))
+                    emit_all(EventType.CONFIG_ERROR, error=str(err))
                 else:
                     if controller.replace_settings(new_settings):
                         current_settings = new_settings
-                        sink.emit(EventType.CONFIG_RELOAD)
+                        emit_all(EventType.CONFIG_RELOAD)
     finally:
         if controller is not None:
             controller.shutdown()
         if server is not None:
             server.shutdown()
-        sink.emit(EventType.SHUTDOWN)
+        emit_all(EventType.SHUTDOWN)
 
 
 @app.command("set")
@@ -189,13 +174,14 @@ def set_speed(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("breezed.toml"),
 ) -> None:
     """Set a fixed manual fan percentage (1-100) until the next mode change."""
-    if not 1 <= pct <= 100:
-        err = ValueError(f"PCT must be in 1..100, got {pct}")
+    try:
+        pct_valid = make_fan_pct(pct)
+    except ValueError as err:
         _fail(err, code=2)
     _, client = _connect(config)
     try:
         client.disable_auto()
-        client.set_manual_pct(make_fan_pct(pct))
+        client.set_manual_pct(pct_valid)
     except IpmiError as err:
         _fail(err, code=1)
     print(json.dumps({"event": "speed_change", "fan_pct": pct}))

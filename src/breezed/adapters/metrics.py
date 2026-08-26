@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from breezed.domain.types import FanPercent, OperatingMode, TempC
+from breezed.domain.types import EventType, FanPercent, OperatingMode, TempC
 
 _CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -41,6 +41,17 @@ class MetricsState:
     def record_ipmi_error(self) -> None:
         with self._lock:
             self.ipmi_errors_total += 1
+
+    def emit(self, event: EventType, /, **fields: object) -> None:
+        if event is EventType.POLL:
+            temp_c = fields.get("temp_c")
+            fan_pct = fields.get("fan_pct")
+            mode = fields.get("mode")
+            if isinstance(temp_c, int) and isinstance(mode, str):
+                pct: FanPercent | None = FanPercent(fan_pct) if isinstance(fan_pct, int) else None
+                self.record_poll(TempC(temp_c), pct, OperatingMode(mode))
+        elif event is EventType.IPMI_ERROR:
+            self.record_ipmi_error()
 
     def render(self) -> str:
         """Exact SPEC five-line block; gauge lines omitted before first poll."""

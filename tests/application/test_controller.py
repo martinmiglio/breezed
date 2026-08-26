@@ -90,7 +90,7 @@ def make_controller(
         ipmi,
         ipmi,
         settings if settings is not None else make_settings(),
-        sink,
+        [sink],
         clock=clock if clock is not None else FakeClock(),
     )
     return controller, ipmi, sink
@@ -292,7 +292,7 @@ def test_replace_settings_success_uses_new_curve_next_tick():
 def test_shutdown_swallows_ipmi_error_from_enable_auto():
     ipmi = FakeIpmi([TempC(60)], fail_enable_auto=True)
     sink = RecordingSink()
-    controller = Controller(ipmi, ipmi, make_settings(), sink)
+    controller = Controller(ipmi, ipmi, make_settings(), [sink])
     controller.tick()
     controller.shutdown()
     assert sink.events(EventType.IPMI_ERROR) == [{"error": "enable_auto failed"}]
