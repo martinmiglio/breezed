@@ -6,7 +6,6 @@ never on a concrete adapter. This file owns all Protocols.
 
 from typing import Protocol, runtime_checkable
 
-from breezed.domain.settings import Settings
 from breezed.domain.types import DomainError, FanPercent, TempC
 
 
@@ -26,10 +25,4 @@ class FanCommander(Protocol):
     def set_manual_pct(self, pct: FanPercent) -> None: ...
 
 
-class SpeedPolicy(Protocol):
-    """Stateless w.r.t. config on purpose — current Settings passed each call."""
-
-    def target_pct(self, temp_c: TempC, settings: Settings) -> int | None: ...
-
-
-__all__ = ["IpmiError", "TempReader", "FanCommander", "SpeedPolicy"]
+__all__ = ["IpmiError", "TempReader", "FanCommander"]

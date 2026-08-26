@@ -3,7 +3,6 @@
 from breezed.adapters.ipmi import IpmiError
 from breezed.application.controller import Controller, ControlState
 from breezed.domain.curve import CurvePoint
-from breezed.domain.ports import SpeedPolicy
 from breezed.domain.settings import Settings
 from breezed.domain.types import EventType, FanPercent, TempC
 
@@ -79,20 +78,11 @@ class RecordingSink:
         return [fields for event, fields in self.records if event == name]
 
 
-class FakePolicy:
-    def __init__(self, target: int | None) -> None:
-        self.target = target
-
-    def target_pct(self, temp_c: TempC, settings: Settings) -> int | None:
-        return self.target
-
-
 def make_controller(
     script: list[TempC | IpmiError],
     *,
     settings: Settings | None = None,
     clock: FakeClock | None = None,
-    policy: SpeedPolicy | None = None,
 ) -> tuple[Controller, FakeIpmi, RecordingSink]:
     ipmi = FakeIpmi(script)
     sink = RecordingSink()
@@ -102,7 +92,6 @@ def make_controller(
         settings if settings is not None else make_settings(),
         sink,
         clock=clock if clock is not None else FakeClock(),
-        policy=policy,
     )
     return controller, ipmi, sink
 
@@ -310,9 +299,15 @@ def test_shutdown_swallows_ipmi_error_from_enable_auto():
     assert controller._state is ControlState.MANUAL
 
 
-def test_fake_policy_injection_drives_controller():
-    policy = FakePolicy(42)
-    controller, ipmi, _sink = make_controller([TempC(30), TempC(85)], policy=policy)
+def test_curve_target_drives_controller_to_manual():
+    # Flat curve pins the target at 42 regardless of temperature.
+    settings = make_settings(
+        curve=(
+            CurvePoint(TempC(0), FanPercent(42)),
+            CurvePoint(TempC(100), FanPercent(42)),
+        )
+    )
+    controller, ipmi, _sink = make_controller([TempC(30), TempC(85)], settings=settings)
     controller.tick()
     assert ipmi.commands == ["manual", "set:42"]
     controller.tick()
@@ -366,9 +361,15 @@ def test_replace_settings_clears_pending_down_step():
     assert len(sink.events(EventType.HYSTERESIS_WAIT)) == 2
 
 
-def test_out_of_range_policy_target_emits_config_error_and_skips_command():
-    policy = FakePolicy(101)
-    controller, ipmi, sink = make_controller([TempC(40)], policy=policy)
+def test_out_of_range_curve_target_emits_config_error_and_skips_command():
+    # Flat curve pins the target at 101, outside the FanPercent 1..100 range.
+    settings = make_settings(
+        curve=(
+            CurvePoint(TempC(0), FanPercent(101)),
+            CurvePoint(TempC(100), FanPercent(101)),
+        )
+    )
+    controller, ipmi, sink = make_controller([TempC(40)], settings=settings)
     controller.tick()
     assert ipmi.commands == []
     assert sink.events(EventType.CONFIG_ERROR) == [{"error": "fan_pct must be in 1..100, got 101"}]
