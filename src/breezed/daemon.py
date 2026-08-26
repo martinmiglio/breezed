@@ -254,6 +254,7 @@ def _install_commands(staging_dir: Path) -> list[str]:
         f"sudo install -D -m {ENV_MODE:o} {s}/breezed.env /etc/breezed.env  # skip if secrets exist",  # noqa: E501
         "sudoedit /etc/breezed.env  # set IDRAC_HOST / IDRAC_USER / IDRAC_PASSWORD",
         "sudo systemctl daemon-reload && sudo systemctl enable --now breezed",
+        f"{EXEC_PATH} --version  # verify the installed runtime",
     ]
 
 
@@ -278,9 +279,10 @@ def stage_install(
     """Copy and relocate the runtime into staging_dir; no privileged side effects.
 
     The staged runtime is relocated to its final /opt paths up front, so plain
-    copy-paste commands are all the privilege escalation the user needs. A smoke
-    test runs the staged ``breezed --version`` before anything is recommended
-    for sudo. ``source_prefix`` defaults to sys.prefix but is only accepted when
+    copy-paste commands are all the privilege escalation the user needs. The
+    staged tree is verified statically — executing it would need /opt to exist
+    already, which only happens after the user runs those commands.
+    ``source_prefix`` defaults to sys.prefix but is only accepted when
     it actually contains an installed breezed runtime; tests inject a minimal
     fake prefix instead.
     """
@@ -308,21 +310,21 @@ def stage_install(
         (staging_dir / "breezed.toml").write_text(
             _read_packaged("breezed.toml.example"), encoding="utf-8"
         )
-        probe = subprocess.run(
-            [str(runtime / "bin" / SERVICE_NAME), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
     except OSError as exc:
         msg = f"staging incomplete in {staging_dir}: {exc}"
         raise DaemonError(msg) from exc
-    if probe.returncode != 0:
-        msg = (
-            "staged runtime failed its smoke test "
-            f"({SERVICE_NAME} --version rc={probe.returncode}): {_first_line(probe.stderr)}"
-        )
+    launcher = runtime / "bin" / SERVICE_NAME
+    if not launcher.is_file():
+        msg = f"staged runtime missing {runtime}/bin/{SERVICE_NAME}"
+        raise DaemonError(msg)
+    shebang = launcher.read_text(encoding="utf-8").splitlines()[0]
+    expected_shebang = f"#!{FINAL_RUNTIME}/bin/python3"
+    if shebang != expected_shebang:
+        msg = f"staged runtime shebang is {shebang!r}, expected {expected_shebang!r}"
+        raise DaemonError(msg)
+    staged_interpreter = base_python / "bin" / "python3"
+    if not staged_interpreter.exists():
+        msg = f"staged base python missing: {staged_interpreter} does not resolve"
         raise DaemonError(msg)
     return StagedInstall(commands=_install_commands(staging_dir), staged_files=staged_files)
 

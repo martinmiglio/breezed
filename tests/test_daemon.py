@@ -7,7 +7,6 @@ dirs injected through --staging-dir.
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -143,13 +142,11 @@ def make_fake_prefix(root: Path, version: str) -> Path:
     (prefix / "bin").mkdir(parents=True)
     (base / "bin").mkdir(parents=True)
     (prefix / "pyvenv.cfg").write_text(f"home = {base}/bin\n", encoding="utf-8")
+    # Entry points carry a venv-interpreter shebang, like real console scripts;
+    # relocation rewrites it to the final /opt interpreter.
     launcher = prefix / "bin" / "breezed"
-    launcher.write_text(f"#!/bin/sh\necho breezed {version}\n", encoding="utf-8")
+    launcher.write_text(f"#!{prefix}/bin/python3\necho breezed {version}\n", encoding="utf-8")
     launcher.chmod(0o755)
-    # Production entry points carry a venv-interpreter shebang; relocation rewrites it.
-    entry = prefix / "bin" / "_entry"
-    entry.write_text(f"#!{prefix}/bin/python3\npass\n", encoding="utf-8")
-    entry.chmod(0o755)
     os.symlink(sys.executable, base / "bin" / "python3")
     os.symlink("../base/bin/python3", prefix / "bin" / "python3")
     return prefix
@@ -187,28 +184,31 @@ def test_stage_install_relocates_to_final_opt_paths(staging: Path, fake_prefix: 
 
     cfg = (staging / "runtime" / "pyvenv.cfg").read_text(encoding="utf-8")
     assert f"home = {FINAL_BASE_PYTHON}/bin" in cfg
-    # Venv-managed entry points get the final interpreter; foreign shebangs survive.
-    shebang = (staging / "runtime" / "bin" / "_entry").read_text(encoding="utf-8").splitlines()[0]
+    shebang = (staging / "runtime" / "bin" / "breezed").read_text(encoding="utf-8").splitlines()[0]
     assert shebang == f"#!{FINAL_RUNTIME}/bin/python3"
-    fake_launcher = (
-        (staging / "runtime" / "bin" / "breezed").read_text(encoding="utf-8").splitlines()[0]
-    )
-    assert fake_launcher == "#!/bin/sh"
     python_link = staging / "runtime" / "bin" / "python3"
     assert os.readlink(python_link) == f"{FINAL_BASE_PYTHON}/bin/python3"
 
 
-def test_staged_runtime_works_standalone(staging: Path, fake_prefix: Path):
-    stage_install(staging, source_prefix=fake_prefix)
+def test_staged_runtime_passes_static_verification(staging: Path, fake_prefix: Path):
+    staged = stage_install(staging, source_prefix=fake_prefix)
 
-    probe = subprocess.run(
-        [str(staging / "runtime" / "bin" / "breezed"), "--version"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert probe.returncode == 0, probe.stderr
-    assert breezed.__version__ in probe.stdout
+    assert staged.commands[-1].startswith(f"{EXEC_PATH} --version")
+    launcher = staging / "runtime" / "bin" / "breezed"
+    assert launcher.is_file()
+    interpreter = staging / "runtime-python" / "bin" / "python3"
+    assert interpreter.exists()
+
+
+def test_stage_install_rejects_unrelocated_launcher_shebang(
+    staging: Path, tmp_path: Path, fake_prefix: Path
+):
+    # Tamper with the source launcher so relocation legitimately skips it.
+    launcher = fake_prefix / "bin" / "breezed"
+    launcher.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    with pytest.raises(DaemonError, match="staged runtime shebang"):
+        stage_install(staging, source_prefix=fake_prefix)
 
 
 def test_stage_install_returns_plain_copy_paste_commands(staging: Path, fake_prefix: Path):
@@ -224,7 +224,10 @@ def test_stage_install_returns_plain_copy_paste_commands(staging: Path, fake_pre
         "sudoedit /etc/breezed.env",
     ):
         assert fragment in joined
-    assert all(c.split()[0] in ("sudo", "sudoedit") for c in staged.commands)
+    assert all(
+        c.split()[0] in ("sudo", "sudoedit") or c.startswith(f"{EXEC_PATH} --version")
+        for c in staged.commands
+    )
     assert staged.staged_files == [
         str(staging / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
     ]
