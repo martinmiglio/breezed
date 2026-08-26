@@ -174,14 +174,17 @@ def install_commands() -> list[str]:
     """
     s = str(STAGING_DIR)
     return [
+        "sudo useradd --system --no-create-home --shell /usr/sbin/nologin breezed  "
+        "# skip if user already exists",
         "sudo env UV_TOOL_DIR=/opt/breezed UV_TOOL_BIN_DIR=/usr/local/bin"
         ' UV_PYTHON_INSTALL_DIR=/opt/breezed-python "$HOME/.local/bin/uv" tool install'
         " ~/Projects/breezed --reinstall",
-        f"sudo install -D {s}/breezed.service /etc/systemd/system/breezed.service",
-        f"sudo install -D {s}/breezed.toml /etc/breezed/breezed.toml"
-        "        # skip if a tuned config exists",
-        f"sudo install -D {s}/breezed.env /etc/breezed.env"
-        "                  # skip if secrets already set",
+        f"sudo install -D -o root -g root -m 0644 {s}/breezed.service "
+        "/etc/systemd/system/breezed.service",
+        f'sudo install -D -o "$USER" -g "$USER" -m 0664 {s}/breezed.toml '
+        "/etc/breezed/breezed.toml  # skip if a tuned config exists",
+        f"sudo install -D -o root -g breezed -m 0640 {s}/breezed.env "
+        "/etc/breezed.env  # skip if secrets already set",
         "sudoedit /etc/breezed.env                                                          "
         "# IDRAC_HOST / IDRAC_USER / IDRAC_PASSWORD",
         "sudo systemctl daemon-reload",

@@ -297,7 +297,7 @@ def _print_command_block(commands: list[str], note: str) -> None:
     console = rich.console.Console()
     console.print(note, style="yellow")
     for command in commands:
-        console.print(f"  {command}", style="bold cyan")
+        console.print(f"  {command}", style="bold cyan", soft_wrap=True)
 
 
 @daemon_app.command("install")
