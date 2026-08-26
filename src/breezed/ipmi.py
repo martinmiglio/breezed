@@ -2,7 +2,7 @@
 
 Structurally satisfies the TempReader and FanCommander ports from breezed.ports
 (never inherits them). Redaction is by construction: the password exists only in
-_run's local argv list; error messages reference the ipmitool subcommand args,
+_invoke's local argv list; error messages reference the ipmitool subcommand args,
 never the full argv.
 """
 
@@ -55,7 +55,7 @@ class IpmiClient:
         self._settings = settings
         self._runner = runner or _default_runner
 
-    def _run(self, args: Sequence[str]) -> str:
+    def _invoke(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         argv = [
             self._settings.ipmitool_path,
             "-I",
@@ -69,26 +69,39 @@ class IpmiClient:
             *args,
         ]
         try:
-            completed = self._runner(argv)
+            return self._runner(argv)
         except subprocess.TimeoutExpired as exc:
             msg = f"ipmitool {' '.join(args)} timed out after {_TIMEOUT_S}s"
             raise IpmiError(msg) from exc
+
+    def _raise_failed(
+        self, args: Sequence[str], completed: subprocess.CompletedProcess[str]
+    ) -> None:
+        stderr = completed.stderr
+        if self._settings.password:
+            stderr = stderr.replace(self._settings.password, "[redacted]")
+        first_line = stderr.strip().splitlines()[0] if stderr.strip() else ""
+        msg = f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {first_line[:200]}"
+        raise IpmiError(msg)
+
+    def _run_read(self, args: Sequence[str]) -> str:
+        """Query subcommands must produce parseable output; empty stdout is a failure."""
+        completed = self._invoke(args)
         if completed.returncode != 0:
-            stderr = completed.stderr
-            if self._settings.password:
-                stderr = stderr.replace(self._settings.password, "[redacted]")
-            first_line = stderr.strip().splitlines()[0] if stderr.strip() else ""
-            msg = (
-                f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {first_line[:200]}"
-            )
-            raise IpmiError(msg)
+            self._raise_failed(args, completed)
         if not completed.stdout.strip():
             msg = f"ipmitool {' '.join(args)}: empty output"
             raise IpmiError(msg)
         return completed.stdout
 
+    def _run_write(self, args: Sequence[str]) -> None:
+        """Raw write subcommands report via exit code; empty stdout is success."""
+        completed = self._invoke(args)
+        if completed.returncode != 0:
+            self._raise_failed(args, completed)
+
     def read_max_cpu_temp(self) -> TempC:
-        output = self._run(["sdr", "type", "temperature"])
+        output = self._run_read(["sdr", "type", "temperature"])
         temps = [int(m.group(1)) for m in _SDR_TEMP_RE.finditer(output)]
         if not temps:
             msg = "ipmitool sdr type temperature: no 0Eh/0Fh temperature rows found"
@@ -96,7 +109,7 @@ class IpmiClient:
         return TempC(max(temps))
 
     def read_fan_rpms(self) -> list[tuple[str, int]]:
-        output = self._run(["sdr", "type", "fan"])
+        output = self._run_read(["sdr", "type", "fan"])
         rpms: list[tuple[str, int]] = []
         for line in output.splitlines():
             fields = [field.strip() for field in line.split("|")]
@@ -109,13 +122,13 @@ class IpmiClient:
         return rpms
 
     def enable_auto(self) -> None:
-        self._run(_ENABLE_AUTO_CMD)
+        self._run_write(_ENABLE_AUTO_CMD)
 
     def disable_auto(self) -> None:
-        self._run(_DISABLE_AUTO_CMD)
+        self._run_write(_DISABLE_AUTO_CMD)
 
     def set_manual_pct(self, pct: FanPercent) -> None:
-        self._run([*_MANUAL_PCT_CMD_PREFIX, f"{pct:#04x}"])
+        self._run_write([*_MANUAL_PCT_CMD_PREFIX, f"{pct:#04x}"])
 
 
 __all__ = ["IpmiError", "Runner", "IpmiClient"]
