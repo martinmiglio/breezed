@@ -1,10 +1,10 @@
 """SPEC controller cases 1-12 plus companion coverage; fakes only, no sleeps."""
 
 from breezed.adapters.ipmi import IpmiError
-from breezed.application.controller import Controller, ControlState
+from breezed.application.controller import Controller
 from breezed.domain.curve import CurvePoint
 from breezed.domain.settings import Settings
-from breezed.domain.types import EventType, FanPercent, TempC
+from breezed.domain.types import EventType, FanPercent, OperatingMode, TempC
 
 DEFAULT_CURVE = (
     CurvePoint(TempC(45), FanPercent(6)),
@@ -296,7 +296,7 @@ def test_shutdown_swallows_ipmi_error_from_enable_auto():
     controller.tick()
     controller.shutdown()
     assert sink.events(EventType.IPMI_ERROR) == [{"error": "enable_auto failed"}]
-    assert controller._state is ControlState.MANUAL
+    assert controller._state is OperatingMode.MANUAL
 
 
 def test_curve_target_drives_controller_to_manual():
