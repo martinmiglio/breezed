@@ -7,21 +7,12 @@ here so they apply uniformly to every target the curve produces.
 
 import time
 from collections.abc import Callable
-from enum import StrEnum
 from typing import Protocol, cast
 
 from breezed.domain.curve import interpolate, validate_curve
 from breezed.domain.ports import FanCommander, IpmiError, TempReader
 from breezed.domain.settings import Settings
-from breezed.domain.types import EventType, FanPercent, make_fan_pct
-
-
-class ControlState(StrEnum):
-    """This machine's belief about the iDRAC — distinct from T2's OperatingMode."""
-
-    UNKNOWN = "unknown"
-    AUTO = "auto"
-    MANUAL = "manual"
+from breezed.domain.types import EventType, FanPercent, OperatingMode, make_fan_pct
 
 
 class EventSink(Protocol):
@@ -45,7 +36,7 @@ class Controller:
         self._settings = settings
         self._sink = sink
         self._clock = clock
-        self._state = ControlState.UNKNOWN
+        self._state = OperatingMode.UNKNOWN
         self._last_pct: FanPercent | None = None
         self._failure_streak = 0
         self._pending_down: tuple[FanPercent, float] | None = None
@@ -53,11 +44,11 @@ class Controller:
     def _force_auto(self, reason: str, **fields: object) -> None:
         old = self._state.value
         self._commander.enable_auto()
-        self._state = ControlState.AUTO
+        self._state = OperatingMode.AUTO
         self._sink.emit(
             EventType.MODE_CHANGE,
             **{"from": old},
-            to=ControlState.AUTO.value,
+            to=OperatingMode.AUTO.value,
             reason=reason,
             **fields,
         )
@@ -66,13 +57,13 @@ class Controller:
         old = self._state.value
         self._commander.disable_auto()
         self._commander.set_manual_pct(pct)
-        self._state = ControlState.MANUAL
+        self._state = OperatingMode.MANUAL
         self._last_pct = pct
         self._pending_down = None
         self._sink.emit(
             EventType.MODE_CHANGE,
             **{"from": old},
-            to=ControlState.MANUAL.value,
+            to=OperatingMode.MANUAL.value,
             reason="temp_under_curve",
         )
         self._sink.emit(
@@ -110,7 +101,7 @@ class Controller:
             self._sink.emit(EventType.IPMI_ERROR, failures=self._failure_streak, error=str(exc))
             if (
                 self._failure_streak >= self._settings.read_failure_limit
-                and self._state is not ControlState.AUTO
+                and self._state is not OperatingMode.AUTO
             ):
                 self._force_auto("read_failures", failures=self._failure_streak)
             return
@@ -120,7 +111,7 @@ class Controller:
 
         if target is None:
             self._pending_down = None
-            if self._state is not ControlState.AUTO:
+            if self._state is not OperatingMode.AUTO:
                 self._force_auto("temp_above_curve", temp_c=temp)
         else:
             try:
@@ -128,7 +119,7 @@ class Controller:
             except ValueError as exc:
                 self._sink.emit(EventType.CONFIG_ERROR, error=str(exc))
             else:
-                if self._state is not ControlState.MANUAL:
+                if self._state is not OperatingMode.MANUAL:
                     self._enter_manual(pct, target)
                 else:
                     last_pct = cast(FanPercent, self._last_pct)
@@ -157,7 +148,7 @@ class Controller:
 
     def shutdown(self) -> None:
         """Restore AUTO unless already there or no command was ever issued."""
-        if self._state is not ControlState.MANUAL:
+        if self._state is not OperatingMode.MANUAL:
             return
         try:
             self._force_auto("shutdown")
@@ -176,4 +167,4 @@ class Controller:
         return True
 
 
-__all__ = ["ControlState", "Controller", "EventSink"]
+__all__ = ["Controller", "EventSink"]
