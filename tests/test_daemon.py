@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 import breezed
 from breezed import cli
+from breezed import daemon as daemon_module
 from breezed.cli import app
 from breezed.daemon import (
     EXEC_PATH,
@@ -135,8 +136,40 @@ def staging(tmp_path: Path) -> Path:
     return tmp_path / "stage"
 
 
-def test_stage_install_stages_unit_env_config_and_runtime(staging: Path):
-    stage_install(staging)
+def make_fake_prefix(root: Path, version: str) -> Path:
+    """Minimal installed-runtime lookalike: no reliance on pytest's own env."""
+    prefix = root / "prefix"
+    base = root / "base"
+    (prefix / "bin").mkdir(parents=True)
+    (base / "bin").mkdir(parents=True)
+    (prefix / "pyvenv.cfg").write_text(f"home = {base}/bin\n", encoding="utf-8")
+    launcher = prefix / "bin" / "breezed"
+    launcher.write_text(f"#!/bin/sh\necho breezed {version}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    # Production entry points carry a venv-interpreter shebang; relocation rewrites it.
+    entry = prefix / "bin" / "_entry"
+    entry.write_text(f"#!{prefix}/bin/python3\npass\n", encoding="utf-8")
+    entry.chmod(0o755)
+    os.symlink(sys.executable, base / "bin" / "python3")
+    os.symlink("../base/bin/python3", prefix / "bin" / "python3")
+    return prefix
+
+
+@pytest.fixture
+def fake_prefix(tmp_path: Path) -> Path:
+    return make_fake_prefix(tmp_path, breezed.__version__)
+
+
+def test_default_source_prefix_rejected_without_installed_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    with pytest.raises(DaemonError, match="no installed breezed runtime"):
+        stage_install(tmp_path / "stage")
+
+
+def test_stage_install_stages_unit_env_config_and_runtime(staging: Path, fake_prefix: Path):
+    stage_install(staging, source_prefix=fake_prefix)
 
     assert (
         (staging / "breezed.service")
@@ -149,20 +182,24 @@ def test_stage_install_stages_unit_env_config_and_runtime(staging: Path):
     assert (staging / "runtime-python" / "bin").is_dir()
 
 
-def test_stage_install_relocates_to_final_opt_paths(staging: Path):
-    stage_install(staging)
+def test_stage_install_relocates_to_final_opt_paths(staging: Path, fake_prefix: Path):
+    stage_install(staging, source_prefix=fake_prefix)
 
     cfg = (staging / "runtime" / "pyvenv.cfg").read_text(encoding="utf-8")
     assert f"home = {FINAL_BASE_PYTHON}/bin" in cfg
-    shebang = (staging / "runtime" / "bin" / "breezed").read_text(encoding="utf-8").splitlines()[0]
+    # Venv-managed entry points get the final interpreter; foreign shebangs survive.
+    shebang = (staging / "runtime" / "bin" / "_entry").read_text(encoding="utf-8").splitlines()[0]
     assert shebang == f"#!{FINAL_RUNTIME}/bin/python3"
+    fake_launcher = (
+        (staging / "runtime" / "bin" / "breezed").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert fake_launcher == "#!/bin/sh"
     python_link = staging / "runtime" / "bin" / "python3"
-    if python_link.is_symlink():
-        assert os.readlink(python_link).startswith(f"{FINAL_BASE_PYTHON}/bin/")
+    assert os.readlink(python_link) == f"{FINAL_BASE_PYTHON}/bin/python3"
 
 
-def test_staged_runtime_works_standalone(staging: Path):
-    stage_install(staging)
+def test_staged_runtime_works_standalone(staging: Path, fake_prefix: Path):
+    stage_install(staging, source_prefix=fake_prefix)
 
     probe = subprocess.run(
         [str(staging / "runtime" / "bin" / "breezed"), "--version"],
@@ -174,8 +211,8 @@ def test_staged_runtime_works_standalone(staging: Path):
     assert breezed.__version__ in probe.stdout
 
 
-def test_stage_install_returns_plain_copy_paste_commands(staging: Path):
-    staged = stage_install(staging)
+def test_stage_install_returns_plain_copy_paste_commands(staging: Path, fake_prefix: Path):
+    staged = stage_install(staging, source_prefix=fake_prefix)
 
     joined = "\n".join(staged.commands)
     for fragment in (
@@ -193,12 +230,14 @@ def test_stage_install_returns_plain_copy_paste_commands(staging: Path):
     ]
 
 
-def test_stage_refused_when_running_from_deployed_runtime(
-    monkeypatch: pytest.MonkeyPatch,
+def test_stage_refused_when_source_is_deployed_runtime(
+    staging: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(sys, "prefix", "/opt/breezed")
+    deployed = tmp_path / "opt" / "breezed"
+    monkeypatch.setattr(daemon_module, "FINAL_RUNTIME", deployed)
+    monkeypatch.setattr(daemon_module, "FINAL_BASE_PYTHON", tmp_path / "opt" / "breezed-python")
     with pytest.raises(DaemonError, match="deployed runtime"):
-        stage_install(Path("/tmp/never-created-by-this-test"))
+        stage_install(staging, source_prefix=deployed)
 
 
 def test_uninstall_commands_stop_remove_and_keep_state():
@@ -216,7 +255,16 @@ def test_help_lists_daemon_subcommands(cli_runner: CliRunner):
         assert name in result.output
 
 
-def test_daemon_install_stages_into_dir_and_prints_json_event(cli_runner: CliRunner, staging: Path):
+def test_daemon_install_stages_into_dir_and_prints_json_event(
+    cli_runner: CliRunner,
+    staging: Path,
+    fake_prefix: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def injected(stage_dir: Path) -> object:
+        return stage_install(stage_dir, source_prefix=fake_prefix)
+
+    monkeypatch.setattr(cli, "stage_install", injected)
     result = cli_runner.invoke(
         app, ["daemon", "install", "--staging-dir", str(staging)], catch_exceptions=False
     )

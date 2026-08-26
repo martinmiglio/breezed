@@ -173,29 +173,44 @@ def daemon_status(
     )
 
 
-def _ensure_not_deployed_runtime() -> None:
-    """Refuse staging when this process runs from inside the deploy target.
+def _ensure_not_deployed_runtime(source_prefix: Path) -> None:
+    """Refuse staging when the source prefix is inside the deploy target.
 
     The live incident: /usr/local/bin/breezed shadowed ~/.local/bin, so the
     stager ran from /opt/breezed and would have copied the deployed runtime
     onto itself.
     """
-    prefix = Path(sys.prefix).resolve()
-    for name in ("opt/breezed", "opt/breezed-python"):
-        target = Path(f"/{name}").resolve()
-        if prefix == target or target in prefix.parents:
+    prefix = source_prefix.resolve()
+    for target in (FINAL_RUNTIME, FINAL_BASE_PYTHON):
+        resolved = target.resolve()
+        if prefix == resolved or resolved in prefix.parents:
             msg = (
-                f"this is the deployed runtime ({target}); stage installs from a "
+                f"this is the deployed runtime ({resolved}); stage installs from a "
                 "development install instead (e.g. ~/.local/bin/breezed)"
             )
             raise DaemonError(msg)
 
 
-def _relocate_runtime(staged_venv: Path) -> None:
+def _default_source_prefix() -> Path:
+    """sys.prefix, but only when it actually holds an installed breezed runtime.
+
+    Under test runners the active prefix is pytest's own environment with no
+    ``bin/breezed``, so staging must never silently copy it.
+    """
+    prefix = Path(sys.prefix).resolve()
+    if not (prefix / "bin" / SERVICE_NAME).exists():
+        msg = "no installed breezed runtime found; generate installs from `uv tool install .`"
+        raise DaemonError(msg)
+    return prefix
+
+
+def _relocate_runtime(staged_venv: Path, src_venv: Path) -> None:
     """Point the staged venv at its final /opt locations.
 
     Must match the printed install commands exactly: the runtime lands at
-    /opt/breezed and the base interpreter at /opt/breezed-python.
+    /opt/breezed and the base interpreter at /opt/breezed-python. Shebangs are
+    rewritten only for entry points that referenced the source venv's own
+    interpreter; foreign scripts (and test fakes) pass through untouched.
     """
     cfg = staged_venv / "pyvenv.cfg"
     lines = cfg.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -204,6 +219,7 @@ def _relocate_runtime(staged_venv: Path) -> None:
     ]
     cfg.write_text("".join(rewritten), encoding="utf-8")
 
+    venv_bin_marker = f"{src_venv}/bin"
     for entry in (staged_venv / "bin").iterdir():
         if entry.is_symlink() and entry.name.startswith("python"):
             # python/python3 point into the base install; retarget to its final home.
@@ -220,6 +236,8 @@ def _relocate_runtime(staged_venv: Path) -> None:
             if f.read(2) != b"#!":
                 continue
         lines = entry.read_text(encoding="utf-8").splitlines(keepends=True)
+        if venv_bin_marker not in lines[0]:
+            continue
         lines[0] = f"#!{FINAL_RUNTIME}/bin/python3\n"
         entry.write_text("".join(lines), encoding="utf-8")
 
@@ -254,16 +272,20 @@ class StagedInstall:
     staged_files: list[str]
 
 
-def stage_install(staging_dir: Path = STAGING_DIR) -> StagedInstall:
+def stage_install(
+    staging_dir: Path = STAGING_DIR, *, source_prefix: Path | None = None
+) -> StagedInstall:
     """Copy and relocate the runtime into staging_dir; no privileged side effects.
 
     The staged runtime is relocated to its final /opt paths up front, so plain
     copy-paste commands are all the privilege escalation the user needs. A smoke
     test runs the staged ``breezed --version`` before anything is recommended
-    for sudo.
+    for sudo. ``source_prefix`` defaults to sys.prefix but is only accepted when
+    it actually contains an installed breezed runtime; tests inject a minimal
+    fake prefix instead.
     """
-    _ensure_not_deployed_runtime()
-    src_venv = Path(sys.prefix).resolve()
+    src_venv = (source_prefix if source_prefix is not None else _default_source_prefix()).resolve()
+    _ensure_not_deployed_runtime(src_venv)
     home = _venv_home(src_venv)
 
     shutil.rmtree(staging_dir, ignore_errors=True)
@@ -275,7 +297,7 @@ def stage_install(staging_dir: Path = STAGING_DIR) -> StagedInstall:
     except OSError as exc:
         msg = f"cannot stage runtime into {staging_dir}: {exc}"
         raise DaemonError(msg) from exc
-    _relocate_runtime(runtime)
+    _relocate_runtime(runtime, src_venv)
 
     staged_files = [
         str(staging_dir / name) for name in ("breezed.service", "breezed.env", "breezed.toml")
