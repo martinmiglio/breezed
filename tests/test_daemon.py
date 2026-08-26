@@ -139,14 +139,30 @@ def test_staged_unit_is_static_and_has_expected_exec_start(tmp_path: Path) -> No
 
 
 def test_install_commands_use_uv_opt_layout_and_protect_existing_state() -> None:
-    commands = "\n".join(install_commands())
+    command_list = install_commands()
+    commands = "\n".join(command_list)
 
+    assert command_list[0] == (
+        "sudo useradd --system --no-create-home --shell /usr/sbin/nologin breezed  "
+        "# skip if user already exists"
+    )
     assert "UV_TOOL_DIR=/opt/breezed" in commands
     assert "UV_TOOL_BIN_DIR=/usr/local/bin" in commands
     assert "UV_PYTHON_INSTALL_DIR=/opt/breezed-python" in commands
     assert "tool install ~/Projects/breezed --reinstall" in commands
-    assert "skip if a tuned config exists" in commands
-    assert "skip if secrets already set" in commands
+    assert (
+        "sudo install -D -o root -g root -m 0644 /tmp/breezed-install/breezed.service "
+        "/etc/systemd/system/breezed.service" in command_list
+    )
+    assert (
+        'sudo install -D -o "$USER" -g "$USER" -m 0664 '
+        "/tmp/breezed-install/breezed.toml /etc/breezed/breezed.toml  "
+        "# skip if a tuned config exists" in command_list
+    )
+    assert (
+        "sudo install -D -o root -g breezed -m 0640 /tmp/breezed-install/breezed.env "
+        "/etc/breezed.env  # skip if secrets already set" in command_list
+    )
     assert "sudo systemctl enable --now breezed" in commands
 
 
@@ -182,6 +198,8 @@ def test_daemon_install_prints_json_then_commands(cli_runner: CliRunner, tmp_pat
         ],
     }
     assert "Review, then run these commands" in result.output
+    output_lines = {line.strip() for line in result.output.splitlines()}
+    assert set(install_commands()) <= output_lines
 
 
 def test_daemon_install_start_flag_is_gone(cli_runner: CliRunner) -> None:

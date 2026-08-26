@@ -62,15 +62,23 @@ journalctl -u breezed -f
 The printed uv command sets `UV_TOOL_DIR=/opt/breezed`,
 `UV_TOOL_BIN_DIR=/usr/local/bin`, and
 `UV_PYTHON_INSTALL_DIR=/opt/breezed-python`, then installs the current checkout
-with `--reinstall`. The following commands install the static packaged unit and
-the staged config and environment skeleton. Skip the config and environment
-install commands when tuned or configured files already exist; those commands
-would otherwise overwrite them.
+with `--reinstall`. Before installation, the command block creates the
+non-login `breezed` system user; skip that command if the user already exists.
+Files are installed with explicit ownership and permissions:
+
+- `/etc/systemd/system/breezed.service`: `root:root`, mode `0644`
+- `/etc/breezed/breezed.toml`: invoking user and group (`$USER:$USER`), mode `0664`
+- `/etc/breezed.env`: `root:breezed`, mode `0640`
+
+The config and environment install lines are for first installation only. Skip
+them when the files are already tuned or configured, including on every upgrade,
+because `install` would overwrite them.
 
 **Upgrading**: update the checkout, run `breezed daemon install`, and re-paste
 the printed commands. The uv `tool install --reinstall` command replaces the
 runtime in `/opt`; skip the config and environment install lines to retain local
-settings, then restart via the printed `systemctl enable --now` command.
+settings. The system-user command can also be skipped after first installation.
+Then restart via the printed `systemctl enable --now` command.
 `breezed daemon uninstall` prints the corresponding uv removal command and a
 fallback cleanup for `/opt`; `/etc/breezed/` and `/etc/breezed.env` remain.
 
