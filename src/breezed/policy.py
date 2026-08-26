@@ -9,7 +9,7 @@ from breezed.types import TempC
 
 @dataclass(frozen=True, slots=True)
 class CurvePolicy:
-    """Shipped v1 strategy; satisfies SpeedPolicy STRUCTURALLY — never inherits."""
+    """Curve-following strategy; satisfies SpeedPolicy structurally — never inherits."""
 
     def target_pct(self, temp_c: TempC, settings: Settings) -> int | None:
         return interpolate(settings.curve, temp_c)
