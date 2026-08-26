@@ -6,7 +6,8 @@ Settings or raises ConfigError, leaving the previous value untouched.
 
 from pathlib import Path
 
-from breezed.config import ConfigError, Settings, load_settings
+from breezed.adapters.config import ConfigError, load_settings
+from breezed.domain.settings import Settings
 
 __all__ = ["ConfigWatcher"]
 

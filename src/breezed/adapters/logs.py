@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from rich.logging import RichHandler
 
-from breezed.types import EventType
+from breezed.domain.types import EventType
 
 SPEC_EVENT_NAMES: frozenset[str] = frozenset(e.value for e in EventType)
 

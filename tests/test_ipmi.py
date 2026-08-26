@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from breezed.config import Settings
-from breezed.ipmi import IpmiClient, IpmiError
-from breezed.ports import FanCommander, TempReader
-from breezed.types import TempC, make_fan_pct
+from breezed.adapters.ipmi import IpmiClient, IpmiError
+from breezed.domain.ports import FanCommander, TempReader
+from breezed.domain.settings import Settings
+from breezed.domain.types import TempC, make_fan_pct
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PASSWORD = "hunter2-secret"

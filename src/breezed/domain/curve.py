@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from breezed.types import FanPercent, TempC
+from breezed.domain.types import FanPercent, TempC
 
 
 @dataclass(frozen=True, slots=True)

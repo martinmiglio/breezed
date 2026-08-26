@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from breezed.types import FanPercent, OperatingMode, TempC
+from breezed.domain.types import FanPercent, OperatingMode, TempC
 
 _CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 

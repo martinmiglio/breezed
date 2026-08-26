@@ -25,7 +25,7 @@ Repository = "https://github.com/martinmiglio/breezed"
 Issues = "https://github.com/martinmiglio/breezed/issues"
 
 [project.scripts]
-breezed = "breezed.cli:app"
+breezed = "breezed.entry:app"
 
 [dependency-groups]
 dev = ["pytest>=8"]

@@ -2,49 +2,34 @@
 
 0 ok, 1 runtime error (IpmiError), 2 usage/config error (ConfigError,
 out-of-range PCT). Errors go to stderr prefixed "breezed:"; stdout stays
-reserved for JSON/machine output. Kept free of module-level side effects beyond
-``app`` and ``deps`` so daemon_app can mount via ``app.add_typer(...)``.
+reserved for JSON/machine output. Runtime entrypoint only; the daemon
+subcommands live in breezed.entry.daemon_app.
 """
 
-import getpass
 import json
 import logging
-import os
-import shutil
 import signal
-import subprocess
-import sys
-import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from traceback import format_exc
-from typing import Annotated, NoReturn
+from typing import Annotated
 
 import rich.console
 import typer
 
 from breezed import __version__
-from breezed.config import ConfigError, Settings, load_settings
-from breezed.controller import Controller, EventSink
-from breezed.curve import interpolate
-from breezed.daemon import (
-    DaemonError,
-    Step,
-    StepOutcome,
-    apply,
-    build_remove_steps,
-    build_steps,
-    daemon_status,
-    remove,
-    stage_files,
-)
-from breezed.ipmi import IpmiClient, IpmiError
-from breezed.logs import LoggingEventSink, setup_logging
-from breezed.metrics import MetricsState, start_metrics_server
-from breezed.types import EventType, FanPercent, OperatingMode, TempC, make_fan_pct
-from breezed.watcher import ConfigWatcher
+from breezed.adapters.config import ConfigError, load_settings
+from breezed.adapters.ipmi import IpmiClient, IpmiError
+from breezed.adapters.logs import LoggingEventSink, setup_logging
+from breezed.adapters.metrics import MetricsState, start_metrics_server
+from breezed.adapters.watcher import ConfigWatcher
+from breezed.application.controller import Controller, EventSink
+from breezed.domain.curve import interpolate
+from breezed.domain.settings import Settings
+from breezed.domain.types import EventType, FanPercent, OperatingMode, TempC, make_fan_pct
+from breezed.entry.common import _fail
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
@@ -59,7 +44,7 @@ class AppDeps:
 
 deps = AppDeps(build_client=IpmiClient, sleep_interruptible=threading.Event.wait)
 
-__all__ = ["app", "deps"]
+__all__ = ["AppDeps", "app", "deps"]
 
 
 def _print_version(value: bool) -> None:
@@ -76,11 +61,6 @@ def _root_callback(
     ] = False,
 ) -> None:
     """Curve-based fan controller for Dell PowerEdge servers via iDRAC/IPMI."""
-
-
-def _fail(err: Exception, *, code: int) -> NoReturn:
-    typer.secho(f"breezed: {err}", fg=typer.colors.RED, err=True)
-    raise typer.Exit(code=code) from err
 
 
 def _load_settings_or_fail(config: Path) -> Settings:
@@ -297,175 +277,3 @@ def validate(
             "would_auto": target is None,
         }
     print(json.dumps(summary))
-
-
-daemon_app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
-
-_KEEP = ["/etc/breezed.env", "/etc/breezed"]
-
-
-def _resolve_self() -> Path:
-    return Path(os.path.realpath(sys.argv[0]))
-
-
-def _resolve_sudo() -> str:
-    sudo = shutil.which("sudo")
-    if sudo is None:
-        _fail(DaemonError("sudo not found; `daemon install` needs a single sudo prompt"), code=1)
-    return sudo
-
-
-def _resolve_uv() -> str:
-    uv = shutil.which("uv")
-    if uv is None:
-        _fail(DaemonError("uv not found on PATH; install uv first"), code=1)
-    return uv
-
-
-def _print_step_plan(steps: list[Step], note: str) -> None:
-    typer.secho(note, fg=typer.colors.YELLOW, err=True)
-    for step in steps:
-        typer.secho(f"  • {step.label}", fg=typer.colors.CYAN, bold=True, err=True)
-
-
-def _print_results(results: list[tuple[str, StepOutcome]]) -> None:
-    for label, outcome in results:
-        if outcome is StepOutcome.SKIPPED:
-            typer.secho(f"  · {label}", dim=True, err=True)
-        else:
-            typer.secho(f"  ✔ {label}", fg=typer.colors.GREEN, err=True)
-
-
-def _run_sudo(argv: list[str]) -> None:
-    completed = subprocess.run(argv, check=False)
-    if completed.returncode != 0:
-        raise typer.Exit(code=completed.returncode or 1)
-
-
-@daemon_app.command("install")
-def daemon_install(
-    staging_dir: Annotated[
-        Path | None, typer.Option("--staging-dir", help="Override the private staging directory")
-    ] = None,
-    source: Annotated[
-        Path | None, typer.Option("--source", help="uv source spec (defaults to current checkout)")
-    ] = None,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Print the privileged steps without escalating")
-    ] = False,
-) -> None:
-    """Stage the unit/env/config, then install the system service via one sudo prompt."""
-    resolved_source = str((source or Path.cwd()).resolve())
-    resolved_uv = _resolve_uv()
-    owner = getpass.getuser()
-    stage_dir = staging_dir or Path(tempfile.mkdtemp(prefix="breezed-install-"))
-    try:
-        stage_files(stage_dir)
-    except DaemonError as err:
-        _fail(err, code=1)
-
-    steps = build_steps(stage_dir, owner, resolved_uv, resolved_source)
-
-    if os.geteuid() == 0:
-        try:
-            _print_results(apply(stage_dir, owner, resolved_uv, resolved_source))
-        except DaemonError as err:
-            _fail(err, code=1)
-        print(json.dumps({"event": "install_complete"}))
-        return
-
-    _print_step_plan(steps, "The following privileged steps will run:")
-    if dry_run:
-        print(json.dumps({"event": "install_planned", "steps": [step.label for step in steps]}))
-        return
-    argv = [
-        _resolve_sudo(),
-        str(_resolve_self()),
-        "daemon",
-        "apply",
-        "--staging-dir",
-        str(stage_dir),
-        "--owner",
-        owner,
-        "--uv",
-        resolved_uv,
-        "--source",
-        resolved_source,
-    ]
-    _run_sudo(argv)
-    print(json.dumps({"event": "install_complete"}))
-
-
-@daemon_app.command("apply", hidden=True)
-def daemon_apply(
-    staging_dir: Annotated[Path, typer.Option()],
-    owner: Annotated[str, typer.Option()],
-    uv: Annotated[str, typer.Option()],
-    source: Annotated[str, typer.Option()],
-) -> None:
-    """Internal privileged install step, invoked via sudo by `daemon install`."""
-    try:
-        results = apply(staging_dir, owner, uv, source)
-    except DaemonError as err:
-        _fail(err, code=1)
-    _print_results(results)
-
-
-@daemon_app.command("status")
-def daemon_status_command() -> None:
-    try:
-        report = daemon_status()
-    except DaemonError as err:
-        _fail(err, code=1)
-    print(json.dumps(asdict(report)))
-
-
-@daemon_app.command("uninstall")
-def daemon_uninstall(
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Print the privileged steps without escalating")
-    ] = False,
-) -> None:
-    """Stop and remove the service and runtime via one sudo prompt; keeps /etc/breezed.env/."""
-    resolved_uv = _resolve_uv()
-
-    steps = build_remove_steps(resolved_uv)
-
-    if os.geteuid() == 0:
-        try:
-            _print_results(remove(resolved_uv))
-        except DaemonError as err:
-            _fail(err, code=1)
-        print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
-        return
-
-    _print_step_plan(steps, "The following privileged steps will run:")
-    if dry_run:
-        print(
-            json.dumps(
-                {
-                    "event": "uninstall_planned",
-                    "keeps": _KEEP,
-                    "steps": [step.label for step in steps],
-                }
-            )
-        )
-        return
-    argv = [_resolve_sudo(), str(_resolve_self()), "daemon", "remove", "--uv", resolved_uv]
-    _run_sudo(argv)
-    print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
-
-
-@daemon_app.command("remove", hidden=True)
-def daemon_remove(
-    uv: Annotated[str, typer.Option()],
-) -> None:
-    """Internal privileged uninstall step, invoked via sudo by `daemon uninstall`."""
-    try:
-        results = remove(uv)
-    except DaemonError as err:
-        _fail(err, code=1)
-    _print_results(results)
-
-
-app.add_typer(daemon_app, name="daemon")

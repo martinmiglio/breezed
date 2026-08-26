@@ -4,8 +4,8 @@ from collections.abc import Sequence
 
 import pytest
 
-from breezed.curve import CurvePoint, interpolate, validate_curve
-from breezed.types import FanPercent, TempC
+from breezed.domain.curve import CurvePoint, interpolate, validate_curve
+from breezed.domain.types import FanPercent, TempC
 
 
 def make_curve(*points: tuple[int, int]) -> Sequence[CurvePoint]:

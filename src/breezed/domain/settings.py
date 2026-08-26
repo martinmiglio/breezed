@@ -1,27 +1,17 @@
-"""TOML config loader: structural adapter only.
+"""Runtime configuration schema (domain model).
 
-Every business rule (positive ints, fan_pct bounds, curve validity) delegates to
-the domain layer in breezed.types / breezed.curve. This module only handles key
-presence, TOML type shape, env/file precedence, and error wrapping.
+Holds the validated Settings aggregate and its pydantic validators; all
+business rules delegate to breezed.domain.types / breezed.domain.curve. The
+TOML source lives in breezed.adapters.config — this module never touches files
+or environment.
 """
 
-import os
-import tomllib
-from pathlib import Path
 from typing import TypeIs
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from breezed.curve import CurvePoint, validate_curve
-from breezed.types import DomainError, TempC, make_fan_pct, make_positive_int
-
-
-class ConfigError(DomainError):
-    """Field-naming failure; also wraps TOML decode, OS, and validation errors.
-
-    Messages reference field names, never secret values (password discipline).
-    """
-
+from breezed.domain.curve import CurvePoint, validate_curve
+from breezed.domain.types import TempC, make_fan_pct, make_positive_int
 
 DEFAULT_CURVE: tuple[CurvePoint, ...] = (
     CurvePoint(temp_c=TempC(45), fan_pct=make_fan_pct(6)),
@@ -30,15 +20,7 @@ DEFAULT_CURVE: tuple[CurvePoint, ...] = (
     CurvePoint(temp_c=TempC(74), fan_pct=make_fan_pct(18)),
 )
 
-
-def _is_int(value: object) -> TypeIs[int]:
-    # TOML has no distinct bool/int ambiguity, but Python's bool is an int and
-    # `true` for poll_interval_s would otherwise silently mean 1.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 _IDENTITY_KEYS = (("host", "IDRAC_HOST"), ("user", "IDRAC_USER"))
-_ENV_OVERRIDES = (*_IDENTITY_KEYS, ("password", "IDRAC_PASSWORD"))
 _POSITIVE_INT_FIELDS = (
     "poll_interval_s",
     "read_failure_limit",
@@ -46,6 +28,12 @@ _POSITIVE_INT_FIELDS = (
     "metrics_port",
 )
 _DEFAULT_TOOL_PATH = "/usr/bin/ipmitool"
+
+
+def _is_int(value: object) -> TypeIs[int]:
+    # TOML has no distinct bool/int ambiguity, but Python's bool is an int and
+    # `true` for poll_interval_s would otherwise silently mean 1.
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _curve_row(index: int, row: dict[str, object]) -> CurvePoint:
@@ -138,35 +126,4 @@ class Settings(BaseModel):
         return value or _DEFAULT_TOOL_PATH
 
 
-def load_settings(path: str | Path) -> Settings:
-    """Binary-mode tomllib load; env wins over file for host/user/password.
-
-    Omitted/empty [[curve]] falls back to DEFAULT_CURVE; unknown keys are ignored
-    everywhere. All business rules live in the domain layer.
-    """
-    try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as exc:
-        msg = f"config: invalid TOML in {path}: {exc}"
-        raise ConfigError(msg) from exc
-    except OSError as exc:
-        msg = f"config: cannot read {path}: {exc}"
-        raise ConfigError(msg) from exc
-
-    raw_settings = data.get("settings")
-    settings_table = dict(raw_settings) if isinstance(raw_settings, dict) else {}
-    for name, env_key in _ENV_OVERRIDES:
-        # An empty env value counts as unset, same as absent.
-        env_value = os.environ.get(env_key)
-        if env_value:
-            settings_table[name] = env_value
-    try:
-        # [[curve]] is a top-level TOML table array, sibling of [settings].
-        return Settings.model_validate({**settings_table, "curve": data.get("curve")})
-    except ValidationError as exc:
-        msg = "; ".join(str(error["msg"]) for error in exc.errors())
-        raise ConfigError(msg) from exc
-
-
-__all__ = ["ConfigError", "DEFAULT_CURVE", "Settings", "load_settings"]
+__all__ = ["DEFAULT_CURVE", "Settings"]

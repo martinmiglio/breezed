@@ -9,9 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 import breezed
-from breezed import cli
-from breezed.cli import app
-from breezed.daemon import (
+import breezed.entry.daemon_cli as cli
+from breezed.entry.daemon import (
     EXEC_PATH,
     UV_PYTHON_INSTALL_DIR,
     UV_TOOL_BIN_DIR,
@@ -27,6 +26,7 @@ from breezed.daemon import (
     remove,
     stage_files,
 )
+from breezed.entry.runtime import app
 
 UNIT_NAME = "breezed.service"
 STAMPED_UNIT = f"""\
@@ -188,7 +188,7 @@ def test_apply_full_run_argv_and_env(
     tmp_path: Path, paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
-    monkeypatch.setattr("breezed.daemon._user_exists", lambda _name: False)
+    monkeypatch.setattr("breezed.entry.daemon._user_exists", lambda _name: False)
     staging = _stage(tmp_path)
     runner = FakeRunner()
 
@@ -251,7 +251,7 @@ def test_apply_skips_user_config_and_env_when_present(
     tmp_path: Path, paths: InstallerPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
-    monkeypatch.setattr("breezed.daemon._user_exists", lambda _name: True)
+    monkeypatch.setattr("breezed.entry.daemon._user_exists", lambda _name: True)
     staging = _stage(tmp_path)
     fs = FakeFileOps({str(paths.config_path): "tuned", str(paths.env_path): "secrets"})
     runner = FakeRunner()

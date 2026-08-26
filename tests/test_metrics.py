@@ -9,12 +9,12 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from breezed.metrics import (
+from breezed.adapters.metrics import (
     MetricsState,
     make_metrics_handler,
     start_metrics_server,
 )
-from breezed.types import FanPercent, OperatingMode, TempC
+from breezed.domain.types import FanPercent, OperatingMode, TempC
 
 EXPECTED_BLOCK = (
     'breezed_temp_c{sensor="cpu_max"} 63\n'

@@ -10,11 +10,11 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Protocol, cast
 
-from breezed.config import Settings
-from breezed.curve import validate_curve
-from breezed.policy import CurvePolicy
-from breezed.ports import FanCommander, IpmiError, SpeedPolicy, TempReader
-from breezed.types import EventType, FanPercent, make_fan_pct
+from breezed.domain.curve import validate_curve
+from breezed.domain.policy import CurvePolicy
+from breezed.domain.ports import FanCommander, IpmiError, SpeedPolicy, TempReader
+from breezed.domain.settings import Settings
+from breezed.domain.types import EventType, FanPercent, make_fan_pct
 
 
 class ControlState(StrEnum):
