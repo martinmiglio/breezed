@@ -54,14 +54,25 @@ class MetricsState:
             self.record_ipmi_error()
 
     def render(self) -> str:
-        """Exact SPEC five-line block; gauge lines omitted before first poll."""
+        """Render typed Prometheus text; gauge samples are omitted before first poll."""
         with self._lock:
             temp_c = self.temp_c
             fan_percent = self.fan_percent
             mode = str(self.mode)
             ipmi_errors_total = self.ipmi_errors_total
             polls_total = self.polls_total
-        lines = []
+        lines = [
+            "# HELP breezed_temp_c Current maximum CPU temperature in degrees Celsius.",
+            "# TYPE breezed_temp_c gauge",
+            "# HELP breezed_fan_percent Last commanded manual fan speed percentage.",
+            "# TYPE breezed_fan_percent gauge",
+            "# HELP breezed_mode Current breezed operating mode.",
+            "# TYPE breezed_mode gauge",
+            "# HELP breezed_ipmi_errors_total Total IPMI errors observed.",
+            "# TYPE breezed_ipmi_errors_total counter",
+            "# HELP breezed_polls_total Total successful temperature polls.",
+            "# TYPE breezed_polls_total counter",
+        ]
         if temp_c is not None:
             lines.append(f'breezed_temp_c{{sensor="cpu_max"}} {temp_c}')
         if fan_percent is not None:
