@@ -1,7 +1,9 @@
 """Fan curve model: validated points and linear interpolation."""
 
+from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
+from operator import attrgetter
 
 from breezed.domain.types import FanPercent, TempC
 
@@ -10,6 +12,9 @@ from breezed.domain.types import FanPercent, TempC
 class CurvePoint:
     temp_c: TempC
     fan_pct: FanPercent
+
+
+_TEMP_C = attrgetter("temp_c")
 
 
 def validate_curve(points: Sequence[CurvePoint]) -> tuple[CurvePoint, ...]:
@@ -47,12 +52,18 @@ def interpolate(curve: Sequence[CurvePoint], temp_c: TempC) -> int | None:
         return None
     if temp_c <= curve[0].temp_c:
         return curve[0].fan_pct
-    for a, b in zip(curve, curve[1:], strict=False):
-        if a.temp_c < temp_c <= b.temp_c:
-            span = b.temp_c - a.temp_c
-            frac = (temp_c - a.temp_c) / span
-            return round(a.fan_pct + (b.fan_pct - a.fan_pct) * frac)
-    raise ValueError("curve not strictly ascending")
+    # Settings stores validated curves as tuples, so bisection avoids scanning
+    # every segment on each daemon poll while preserving the same interval rule.
+    index = bisect_left(curve, temp_c, key=_TEMP_C)
+    if index == 0 or index == len(curve):
+        raise ValueError("curve not strictly ascending")
+    a = curve[index - 1]
+    b = curve[index]
+    if a.temp_c >= b.temp_c:
+        raise ValueError("curve not strictly ascending")
+    span = b.temp_c - a.temp_c
+    frac = (temp_c - a.temp_c) / span
+    return round(a.fan_pct + (b.fan_pct - a.fan_pct) * frac)
 
 
 __all__ = ["CurvePoint", "interpolate", "validate_curve"]
