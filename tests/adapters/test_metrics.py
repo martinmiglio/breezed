@@ -16,7 +16,20 @@ from breezed.adapters.metrics import (
 )
 from breezed.domain.types import FanPercent, OperatingMode, TempC
 
-EXPECTED_BLOCK = (
+EXPECTED_METADATA = (
+    "# HELP breezed_temp_c Current maximum CPU temperature in degrees Celsius.\n"
+    "# TYPE breezed_temp_c gauge\n"
+    "# HELP breezed_fan_percent Last commanded manual fan speed percentage.\n"
+    "# TYPE breezed_fan_percent gauge\n"
+    "# HELP breezed_mode Current breezed operating mode.\n"
+    "# TYPE breezed_mode gauge\n"
+    "# HELP breezed_ipmi_errors_total Total IPMI errors observed.\n"
+    "# TYPE breezed_ipmi_errors_total counter\n"
+    "# HELP breezed_polls_total Total successful temperature polls.\n"
+    "# TYPE breezed_polls_total counter\n"
+)
+
+EXPECTED_BLOCK = EXPECTED_METADATA + (
     'breezed_temp_c{sensor="cpu_max"} 63\n'
     "breezed_fan_percent 12\n"
     'breezed_mode{mode="manual"} 1\n'
@@ -55,11 +68,11 @@ def test_mode_label_reflects_state() -> None:
 def test_render_omits_gauge_lines_before_first_poll() -> None:
     state = MetricsState()
     rendered = state.render()
-    assert rendered == (
+    assert rendered == EXPECTED_METADATA + (
         'breezed_mode{mode="unknown"} 1\nbreezed_ipmi_errors_total 0\nbreezed_polls_total 0\n'
     )
-    assert "breezed_temp_c" not in rendered
-    assert "breezed_fan_percent" not in rendered
+    assert 'breezed_temp_c{sensor="cpu_max"}' not in rendered
+    assert "\nbreezed_fan_percent " not in rendered
 
 
 def test_counters_are_monotonic_ints() -> None:
