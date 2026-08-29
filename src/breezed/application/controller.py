@@ -7,7 +7,7 @@ here so they apply uniformly to every target the curve produces.
 
 import time
 from collections.abc import Callable, Sequence
-from typing import Protocol, cast
+from typing import Protocol
 
 from breezed.domain.curve import interpolate, validate_curve
 from breezed.domain.ports import FanCommander, TempReader
@@ -126,7 +126,8 @@ class Controller:
                 if self._state is not OperatingMode.MANUAL:
                     self._enter_manual(pct, target)
                 else:
-                    last_pct = cast(FanPercent, self._last_pct)
+                    assert self._last_pct is not None
+                    last_pct = self._last_pct
                     if target > last_pct:
                         self._commander.set_manual_pct(pct)
                         self._last_pct = pct
