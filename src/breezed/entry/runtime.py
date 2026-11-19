@@ -25,8 +25,9 @@ from breezed.adapters.ipmi import IpmiClient, IpmiError
 from breezed.adapters.logs import LoggingEventSink, setup_logging
 from breezed.adapters.metrics import MetricsState, start_metrics_server
 from breezed.adapters.watcher import ConfigWatcher
-from breezed.application.controller import Controller, EventSink
+from breezed.application.controller import Controller
 from breezed.domain.curve import interpolate
+from breezed.domain.ports import EventSink
 from breezed.domain.settings import Settings
 from breezed.domain.types import EventType, make_fan_pct
 from breezed.entry.common import _fail
@@ -148,7 +149,7 @@ def _run_body(config: Path, metrics_port: int | None) -> None:
     emit_all(EventType.STARTUP)
     try:
         client = deps.build_client(current_settings)
-        controller = Controller(client, client, current_settings, sinks)
+        controller = Controller(client, client, interpolate, current_settings, sinks)
         while not deps.sleep_interruptible(stop_event, current_settings.poll_interval_s):
             controller.tick()
             if watcher.changed():
