@@ -97,7 +97,8 @@ or secrets.
 
 **Upgrading**: update the checkout and run `breezed daemon install` again.
 The uv `tool install --reinstall` step replaces the runtime in `/opt`; the config
-and environment steps are skipped because those files already exist. `breezed
+and environment steps are skipped because those files already exist. The final
+step restarts the service, so the new runtime is loaded immediately. `breezed
 daemon uninstall` mirrors install: one sudo prompt to disable and remove the
 service and runtime, while `/etc/breezed/` and `/etc/breezed.env` remain.
 
