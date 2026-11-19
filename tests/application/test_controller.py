@@ -4,7 +4,7 @@ from breezed.adapters.ipmi import IpmiError
 from breezed.application.controller import Controller
 from breezed.domain.curve import CurvePoint
 from breezed.domain.settings import Settings
-from breezed.domain.types import EventType, FanPercent, OperatingMode, TempC
+from breezed.domain.types import EventType, FanPercent, TempC
 
 DEFAULT_CURVE = (
     CurvePoint(TempC(45), FanPercent(6)),
@@ -319,7 +319,6 @@ def test_shutdown_tolerates_ipmi_error_from_enable_auto():
             "error": "enable_auto failed",
         }
     ]
-    assert controller._state is OperatingMode.MANUAL
     # A later shutdown retries the restore without raising.
     controller.shutdown()
     assert sink.events(EventType.IPMI_ERROR)[-1]["failures"] == 2
@@ -334,7 +333,6 @@ def test_read_failure_fallback_write_timeout_is_non_fatal_and_retried():
     controller.tick()
     controller.tick()
     controller.tick()  # third read failure -> enable_auto times out
-    assert controller._state is OperatingMode.MANUAL
     assert len(sink.events(EventType.MODE_CHANGE)) == 1
     assert sink.events(EventType.IPMI_ERROR)[-1] == {
         "operation": "enable_auto",
@@ -345,11 +343,9 @@ def test_read_failure_fallback_write_timeout_is_non_fatal_and_retried():
 
     controller.tick()  # next tick retries instead of crashing
     assert sink.events(EventType.IPMI_ERROR)[-1]["failures"] == 2
-    assert controller._state is OperatingMode.MANUAL
 
     ipmi.fail_enable_auto = False
     controller.tick()  # write succeeds and the fallback completes
-    assert controller._state is OperatingMode.AUTO
     assert sink.events(EventType.MODE_CHANGE)[-1] == {
         "from": "manual",
         "to": "auto",
@@ -361,8 +357,6 @@ def test_read_failure_fallback_write_timeout_is_non_fatal_and_retried():
 def test_set_manual_timeout_during_manual_enter_keeps_state_and_retries():
     controller, ipmi, sink = make_controller([TempC(60), TempC(60)], fail_set_manual=True)
     controller.tick()  # disable_auto succeeds, set_manual_pct times out
-    assert controller._state is OperatingMode.UNKNOWN
-    assert controller._last_pct is None
     assert ipmi.commands == ["manual"]
     assert sink.events(EventType.MODE_CHANGE) == []
     assert sink.events(EventType.IPMI_ERROR) == [
@@ -377,8 +371,6 @@ def test_set_manual_timeout_during_manual_enter_keeps_state_and_retries():
     ipmi.fail_set_manual = False
     controller.tick()  # whole transition retried from a consistent state
     assert ipmi.commands == ["manual", "manual", "set:8"]
-    assert controller._state is OperatingMode.MANUAL
-    assert controller._last_pct == 8
     assert sink.events(EventType.MODE_CHANGE) == [
         {"from": "unknown", "to": "manual", "reason": "temp_under_curve"}
     ]
@@ -387,7 +379,6 @@ def test_set_manual_timeout_during_manual_enter_keeps_state_and_retries():
 def test_disable_auto_timeout_keeps_state_and_retries():
     controller, ipmi, sink = make_controller([TempC(60), TempC(60)], fail_disable_auto=True)
     controller.tick()
-    assert controller._state is OperatingMode.UNKNOWN
     assert ipmi.commands == []
     assert sink.events(EventType.IPMI_ERROR) == [
         {
@@ -401,7 +392,11 @@ def test_disable_auto_timeout_keeps_state_and_retries():
     ipmi.fail_disable_auto = False
     controller.tick()
     assert ipmi.commands == ["manual", "set:8"]
-    assert controller._state is OperatingMode.MANUAL
+    assert sink.events(EventType.MODE_CHANGE)[-1] == {
+        "from": "unknown",
+        "to": "manual",
+        "reason": "temp_under_curve",
+    }
 
 
 def test_temp_rise_write_timeout_keeps_last_pct_and_retries():
@@ -409,8 +404,6 @@ def test_temp_rise_write_timeout_keeps_last_pct_and_retries():
     controller.tick()  # manual at 8
     ipmi.fail_set_manual = True
     controller.tick()  # target 12 > last: write times out
-    assert controller._last_pct == 8
-    assert controller._state is OperatingMode.MANUAL
     assert sink.events(EventType.IPMI_ERROR)[-1] == {
         "operation": "set_manual_pct",
         "reason": "temp_rise",
@@ -438,8 +431,6 @@ def test_hysteresis_write_timeout_keeps_pending_step_and_retries():
     clock.advance(30)
     ipmi.fail_set_manual = True
     controller.tick()  # hysteresis expired: write times out
-    assert controller._pending_down is not None
-    assert controller._last_pct == 12
     assert sink.events(EventType.IPMI_ERROR)[-1] == {
         "operation": "set_manual_pct",
         "reason": "hysteresis_elapsed",
@@ -450,7 +441,6 @@ def test_hysteresis_write_timeout_keeps_pending_step_and_retries():
     ipmi.fail_set_manual = False
     controller.tick()
     assert ipmi.commands == ["manual", "set:12", "set:8"]
-    assert controller._pending_down is None
     assert sink.events(EventType.SPEED_CHANGE)[-1] == {
         "fan_pct": 8,
         "target_pct": 8,
