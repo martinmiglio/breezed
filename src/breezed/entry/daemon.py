@@ -300,8 +300,15 @@ def _daemon_reload(runner: CommandRunner) -> StepOutcome:
     return StepOutcome.DONE
 
 
-def _enable_start(runner: CommandRunner) -> StepOutcome:
-    runner(["systemctl", "enable", "--now", SERVICE_NAME])
+def _enable(runner: CommandRunner) -> StepOutcome:
+    runner(["systemctl", "enable", SERVICE_NAME])
+    return StepOutcome.DONE
+
+
+def _restart(runner: CommandRunner) -> StepOutcome:
+    # Unconditional restart: on upgrades the old process is still running the
+    # previous /opt runtime, so enabling alone would leave stale code active.
+    runner(["systemctl", "restart", SERVICE_NAME])
     return StepOutcome.DONE
 
 
@@ -352,7 +359,8 @@ def build_steps(
             lambda: _install_env_if_absent(runner, fs, staging_dir, paths),
         ),
         Step("systemctl daemon-reload", lambda: _daemon_reload(runner)),
-        Step("systemctl enable --now breezed", lambda: _enable_start(runner)),
+        Step("systemctl enable breezed", lambda: _enable(runner)),
+        Step("systemctl restart breezed", lambda: _restart(runner)),
     ]
 
 

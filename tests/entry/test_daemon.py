@@ -169,7 +169,8 @@ def test_build_steps_labels_and_order(tmp_path: Path) -> None:
         "install /etc/breezed/breezed.toml (first run only)",
         "install /etc/breezed.env (first run only)",
         "systemctl daemon-reload",
-        "systemctl enable --now breezed",
+        "systemctl enable breezed",
+        "systemctl restart breezed",
     ]
 
 
@@ -242,7 +243,8 @@ def test_apply_full_run_argv_and_env(
             str(paths.env_path),
         ],
         ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", "breezed"],
+        ["systemctl", "enable", "breezed"],
+        ["systemctl", "restart", "breezed"],
     ]
     assert runner.argvs[1][1] == UV_ENV
 
@@ -285,7 +287,8 @@ def test_apply_skips_user_config_and_env_when_present(
             str(paths.unit_path),
         ],
         ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", "breezed"],
+        ["systemctl", "enable", "breezed"],
+        ["systemctl", "restart", "breezed"],
     ]
 
 
@@ -399,7 +402,7 @@ def test_daemon_install_builds_sudo_argv(
     ("command", "extra_args", "needs_staging", "stderr_needle"),
     [
         ("install", [], True, "The following privileged steps will run:"),
-        ("install", ["--dry-run"], True, "systemctl enable --now breezed"),
+        ("install", ["--dry-run"], True, "systemctl restart breezed"),
         ("uninstall", [], False, "The following privileged steps will run:"),
         ("uninstall", ["--dry-run"], False, "systemctl disable --now breezed"),
     ],
@@ -461,7 +464,7 @@ def test_daemon_install_dry_run_prints_plan_without_sudo(
     payload = json.loads(result.stdout)
     assert payload["event"] == "install_planned"
     assert "uv tool install runtime under /opt" in payload["steps"]
-    assert "systemctl enable --now breezed" in payload["steps"]
+    assert "systemctl restart breezed" in payload["steps"]
     assert "privileged steps" in result.stderr
 
 
