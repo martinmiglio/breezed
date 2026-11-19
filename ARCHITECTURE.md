@@ -63,11 +63,12 @@ today). The core does not know which sinks exist.
    closed source of event names. To add an event: add the member to `EventType`
    first, then make every `EventSink` handle (or explicitly ignore) it. Emit
    sites pass the enum; sinks never invent names.
-4. **Secrets discipline.** The iDRAC password exists only inside
-   `IpmiClient._invoke`'s local argv; it is never stored, logged, or echoed.
-   Error messages reference subcommand args, never the full argv, and redact on
-   stderr. Config never holds secrets — `IDRAC_*` come from the environment and
-   win over the file.
+4. **Secrets discipline.** The iDRAC password is passed to ipmitool through the
+   child process environment (`IPMI_PASSWORD` / `-E`), never on argv, so it does
+   not appear in `ps` or traceback command lines. It is never stored, logged, or
+   echoed; `Settings.password` is a `SecretStr`. Error messages reference
+   subcommand args, never the full argv, and redact on stderr. Config never holds
+   secrets — `IDRAC_*` come from the environment and win over the file.
 5. **Single composition root.** Only `entry/` builds and injects dependencies
    (`AppDeps` in `entry/runtime.py`). Inner layers accept ports/values through
    constructors; they never import a concrete collaborator to self-wire.

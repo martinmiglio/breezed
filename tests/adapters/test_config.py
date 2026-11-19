@@ -61,7 +61,7 @@ def test_full_valid_toml_loads_frozen_settings() -> None:
 
     assert settings.host == "169.254.0.1"
     assert settings.user == "root"
-    assert settings.password == ""
+    assert settings.password.get_secret_value() == ""
     assert settings.curve == EXPECTED_FIXTURE_CURVE
     assert settings.poll_interval_s == 10
     assert settings.read_failure_limit == 3
@@ -94,7 +94,7 @@ def test_env_overrides_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
 
     assert settings.host == "10.9.8.7"
     assert settings.user == "envuser"
-    assert settings.password == "envpass"
+    assert settings.password.get_secret_value() == "envpass"
 
 
 def test_empty_env_value_falls_back_to_file(
@@ -109,7 +109,7 @@ def test_empty_env_value_falls_back_to_file(
     monkeypatch.setenv("IDRAC_PASSWORD", "")
     settings = load_settings(path)
     assert settings.host == "file-host"
-    assert settings.password == ""
+    assert settings.password.get_secret_value() == ""
 
 
 def test_empty_env_value_with_missing_file_key_raises(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from breezed.adapters.ipmi import IpmiClient, IpmiError
+from breezed.adapters.ipmi import IpmiClient, IpmiError, Runner
 from breezed.domain.ports import FanCommander, TempReader
 from breezed.domain.settings import Settings
 from breezed.domain.types import TempC, make_fan_pct
@@ -19,14 +19,18 @@ def make_settings() -> Settings:
 
 
 class FakeRunner:
-    """Records argv; pops one canned response per call."""
+    """Records argv/env; pops one canned response per call."""
 
     def __init__(self, *responses: subprocess.CompletedProcess[str]) -> None:
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
         self.responses = list(responses)
 
-    def __call__(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+    def __call__(
+        self, args: list[str], *, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(args))
+        self.envs.append(dict(env) if env is not None else None)
         return self.responses.pop(0)
 
 
@@ -34,7 +38,7 @@ def ok(stdout: str) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
-def make_client(runner: FakeRunner) -> IpmiClient:
+def make_client(runner: Runner) -> IpmiClient:
     return IpmiClient(make_settings(), runner=runner)
 
 
@@ -104,8 +108,7 @@ def test_commands_emit_exact_argv() -> None:
         "169.254.0.1",
         "-U",
         "root",
-        "-P",
-        PASSWORD,
+        "-E",
     ]
     auto_runner, manual_runner, speed_runner, hex_runner = (
         FakeRunner(ok("ok\n")),
@@ -127,6 +130,45 @@ def test_commands_emit_exact_argv() -> None:
     assert manual_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x01", "0x00"]]
     assert speed_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x02", "0xff", "0x64"]]
     assert hex_runner.calls == [[*prefix, "raw", "0x30", "0x30", "0x02", "0xff", "0x0a"]]
+
+
+def test_password_is_passed_in_child_environment_not_argv() -> None:
+    runner = FakeRunner(ok("ok\n"))
+    make_client(runner).enable_auto()
+
+    argv = runner.calls[0]
+    env = runner.envs[0]
+    assert env is not None
+    assert env["IPMI_PASSWORD"] == PASSWORD
+    assert "IDRAC_PASSWORD" not in env
+    assert "-P" not in argv
+    assert all(PASSWORD not in part for part in argv)
+
+
+class TimeoutRunner:
+    """Raises TimeoutExpired with a hostile cmd, as subprocess.run would."""
+
+    def __call__(
+        self, _args: list[str], *, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["ipmitool", "-P", PASSWORD], timeout=15)
+
+
+def test_timeout_suppresses_argv_bearing_cause() -> None:
+    with pytest.raises(IpmiError) as exc_info:
+        make_client(TimeoutRunner()).read_max_cpu_temp()
+
+    assert PASSWORD not in str(exc_info.value)
+    assert PASSWORD not in repr(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+
+
+def test_settings_repr_masks_password() -> None:
+    settings = make_settings()
+    assert PASSWORD not in repr(settings)
+    assert PASSWORD not in str(settings.password)
+    assert settings.password.get_secret_value() == PASSWORD
 
 
 def test_password_never_appears_in_raised_messages_even_when_stderr_echoes_it() -> None:
