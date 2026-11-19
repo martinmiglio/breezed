@@ -403,6 +403,7 @@ def test_daemon_install_builds_sudo_argv(
         ("uninstall", [], False, "The following privileged steps will run:"),
         ("uninstall", ["--dry-run"], False, "systemctl disable --now breezed"),
     ],
+    ids=["install", "install-dry-run", "uninstall", "uninstall-dry-run"],
 )
 def test_daemon_lifecycle_is_quiet_by_default(
     cli_runner: CliRunner,
