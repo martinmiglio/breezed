@@ -1,14 +1,15 @@
 """IPMI adapter over ipmitool — the only module in T1-T7 that touches subprocess.
 
 Structurally satisfies the TempReader and FanCommander ports from breezed.ports
-(never inherits them). Redaction is by construction: the password exists only in
-_invoke's local argv list; error messages reference the ipmitool subcommand args,
-never the full argv.
+(never inherits them). Redaction is by construction: the password is handed to
+ipmitool through the IPMI_PASSWORD environment variable (-E), never on argv;
+error messages reference the ipmitool subcommand args, never the full argv.
 """
 
+import os
 import re
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from breezed.domain.settings import Settings
 from breezed.domain.types import FanPercent, IpmiError, TempC
@@ -34,7 +35,9 @@ _DISABLE_AUTO_CMD = ["raw", "0x30", "0x30", "0x01", "0x00"]
 _MANUAL_PCT_CMD_PREFIX = ["raw", "0x30", "0x30", "0x02", "0xff"]
 
 
-def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _default_runner(
+    args: Sequence[str], *, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """subprocess.run with capture_output/text/utf-8/replace, timeout, check=False."""
     return subprocess.run(
         args,
@@ -44,6 +47,7 @@ def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         errors="replace",
         timeout=_TIMEOUT_S,
         check=False,
+        env=env,
     )
 
 
@@ -54,6 +58,9 @@ class IpmiClient:
         self._settings = settings
         self._runner = runner or _default_runner
 
+    def _password(self) -> str:
+        return self._settings.password.get_secret_value()
+
     def _invoke(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         argv = [
             self._settings.ipmitool_path,
@@ -63,22 +70,28 @@ class IpmiClient:
             self._settings.host,
             "-U",
             self._settings.user,
-            "-P",
-            self._settings.password,
+            "-E",
             *args,
         ]
+        # Only ipmitool needs the secret. Do not forward IDRAC_PASSWORD, which
+        # the daemon inherits from its EnvironmentFile.
+        env = {key: value for key, value in os.environ.items() if key != "IDRAC_PASSWORD"}
+        env["IPMI_PASSWORD"] = self._password()
         try:
-            return self._runner(argv)
-        except subprocess.TimeoutExpired as exc:
+            return self._runner(argv, env=env)
+        except subprocess.TimeoutExpired:
+            # TimeoutExpired embeds the full argv. Suppress its context so a
+            # future regression cannot leak the argv into format_exc() logs.
             msg = f"ipmitool {' '.join(args)} timed out after {_TIMEOUT_S}s"
-            raise IpmiError(msg) from exc
+            raise IpmiError(msg) from None
 
     def _raise_failed(
         self, args: Sequence[str], completed: subprocess.CompletedProcess[str]
     ) -> None:
         stderr = completed.stderr
-        if self._settings.password:
-            stderr = stderr.replace(self._settings.password, "[redacted]")
+        password = self._password()
+        if password:
+            stderr = stderr.replace(password, "[redacted]")
         first_line = stderr.strip().splitlines()[0] if stderr.strip() else ""
         msg = f"ipmitool {' '.join(args)} failed (rc={completed.returncode}): {first_line[:200]}"
         raise IpmiError(msg)

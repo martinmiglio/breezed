@@ -8,7 +8,7 @@ or environment.
 
 from typing import TypeIs
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator, model_validator
 
 from breezed.domain.curve import CurvePoint, validate_curve
 from breezed.domain.types import TempC, make_fan_pct, make_positive_int
@@ -62,7 +62,7 @@ class Settings(BaseModel):
 
     host: str
     user: str
-    password: str = ""
+    password: SecretStr = SecretStr("")
     curve: tuple[CurvePoint, ...] = DEFAULT_CURVE
     poll_interval_s: int = 10
     read_failure_limit: int = 3
