@@ -58,7 +58,9 @@ breezed daemon uninstall              # one command, one sudo prompt; keeps env/
 ```
 
 Exit codes: `0` ok, `1` runtime error (e.g. IPMI failure), `2` usage/config error.
-Machine-readable output is always JSON on stdout; errors go to stderr as text.
+`daemon install` and `daemon uninstall` print human-readable steps to stderr and
+nothing to stdout by default; pass `--json` for one machine-readable JSON object
+on stdout. Other commands always emit JSON on stdout; errors go to stderr as text.
 
 ## Deploy (systemd)
 
