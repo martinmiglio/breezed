@@ -19,7 +19,7 @@ from breezed.adapters.logs import (
     LoggingEventSink,
     setup_logging,
 )
-from breezed.application.controller import EventSink
+from breezed.domain.ports import EventSink
 from breezed.domain.types import EventType
 
 TS_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")

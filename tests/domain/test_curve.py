@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import pytest
 
 from breezed.domain.curve import CurvePoint, interpolate, validate_curve
+from breezed.domain.ports import SpeedPolicy
 from breezed.domain.types import FanPercent, TempC
 
 
@@ -64,6 +65,10 @@ def test_single_point_curve():
     assert interpolate(curve, TempC(40)) == 10
     assert interpolate(curve, TempC(50)) is None
     assert interpolate(curve, TempC(60)) is None
+
+
+def test_interpolate_structurally_satisfies_speed_policy_port():
+    assert isinstance(interpolate, SpeedPolicy)
 
 
 def test_non_monotonic_curve_rejected_by_validator():

@@ -1,8 +1,11 @@
 """SPEC controller cases 1-12 plus companion coverage; fakes only, no sleeps."""
 
+from collections.abc import Sequence
+
 from breezed.adapters.ipmi import IpmiError
 from breezed.application.controller import Controller
-from breezed.domain.curve import CurvePoint
+from breezed.domain.curve import CurvePoint, interpolate
+from breezed.domain.ports import SpeedPolicy
 from breezed.domain.settings import Settings
 from breezed.domain.types import EventType, FanPercent, OperatingMode, TempC
 
@@ -67,6 +70,16 @@ class FakeIpmi:
         self.commands.append(f"set:{pct}")
 
 
+class RecordingPolicy:
+    def __init__(self, target: int | None) -> None:
+        self.target = target
+        self.calls: list[tuple[Sequence[CurvePoint], TempC]] = []
+
+    def __call__(self, curve: Sequence[CurvePoint], temp_c: TempC) -> int | None:
+        self.calls.append((curve, temp_c))
+        return self.target
+
+
 class RecordingSink:
     def __init__(self) -> None:
         self.records: list[tuple[EventType, dict[str, object]]] = []
@@ -82,6 +95,7 @@ def make_controller(
     script: list[TempC | IpmiError],
     *,
     settings: Settings | None = None,
+    policy: SpeedPolicy | None = None,
     clock: FakeClock | None = None,
 ) -> tuple[Controller, FakeIpmi, RecordingSink]:
     ipmi = FakeIpmi(script)
@@ -89,6 +103,7 @@ def make_controller(
     controller = Controller(
         ipmi,
         ipmi,
+        policy if policy is not None else interpolate,
         settings if settings is not None else make_settings(),
         [sink],
         clock=clock if clock is not None else FakeClock(),
@@ -292,7 +307,7 @@ def test_replace_settings_success_uses_new_curve_next_tick():
 def test_shutdown_swallows_ipmi_error_from_enable_auto():
     ipmi = FakeIpmi([TempC(60)], fail_enable_auto=True)
     sink = RecordingSink()
-    controller = Controller(ipmi, ipmi, make_settings(), [sink])
+    controller = Controller(ipmi, ipmi, interpolate, make_settings(), [sink])
     controller.tick()
     controller.shutdown()
     assert sink.events(EventType.IPMI_ERROR) == [{"error": "enable_auto failed"}]
@@ -359,6 +374,15 @@ def test_replace_settings_clears_pending_down_step():
     controller.tick()
     assert "set:8" not in ipmi.commands
     assert len(sink.events(EventType.HYSTERESIS_WAIT)) == 2
+
+
+def test_uses_injected_speed_policy_instead_of_curve_interpolation():
+    # DEFAULT_CURVE would map 50C to 7%; the fake policy proves it is consulted.
+    policy = RecordingPolicy(target=42)
+    controller, ipmi, _sink = make_controller([TempC(50)], policy=policy)
+    controller.tick()
+    assert ipmi.commands == ["manual", "set:42"]
+    assert policy.calls == [(make_settings().curve, TempC(50))]
 
 
 def test_out_of_range_curve_target_emits_config_error_and_skips_command():

@@ -53,8 +53,7 @@ In `entry/runtime.py` (runtime cmds) or `entry/daemon_cli.py` (daemon cmds):
 2. Emit it from `Controller` via `self._emit(EventType.X, **fields)`.
 3. Ensure every `EventSink` (`LoggingEventSink`, `MetricsState`) handles or ignores it.
 
-## Known cleanup targets
-- `EventSink` should move from `application/controller.py` into `domain/ports.py`.
-- `Controller` should depend on a `SpeedPolicy` Protocol (implemented by
-  `curve.interpolate`) rather than calling `interpolate` directly.
-See `ARCHITECTURE.md` → Target-state cleanup for rationale.
+## Notes
+- `EventSink` and `SpeedPolicy` are `domain/ports.py` Protocols. Wire the real
+  policy (`curve.interpolate`) in `entry/`; `Controller` never imports it.
+See `ARCHITECTURE.md` for the dependency-direction contract.

@@ -7,25 +7,21 @@ here so they apply uniformly to every target the curve produces.
 
 import time
 from collections.abc import Callable, Sequence
-from typing import Protocol
 
-from breezed.domain.curve import interpolate, validate_curve
-from breezed.domain.ports import FanCommander, TempReader
+from breezed.domain.curve import validate_curve
+from breezed.domain.ports import EventSink, FanCommander, SpeedPolicy, TempReader
 from breezed.domain.settings import Settings
 from breezed.domain.types import EventType, FanPercent, IpmiError, OperatingMode, make_fan_pct
 
 
-class EventSink(Protocol):
-    def emit(self, event: EventType, /, **fields: object) -> None: ...
-
-
 class Controller:
-    """Each tick(): read -> decide target via the curve -> command hardware -> emit events."""
+    """Each tick(): read -> decide target via the SpeedPolicy -> command hardware -> emit events."""
 
     def __init__(
         self,
         reader: TempReader,
         commander: FanCommander,
+        policy: SpeedPolicy,
         settings: Settings,
         sinks: Sequence[EventSink],
         *,
@@ -33,6 +29,7 @@ class Controller:
     ) -> None:
         self._reader = reader
         self._commander = commander
+        self._policy = policy
         self._settings = settings
         self._sinks = sinks
         self._clock = clock
@@ -111,7 +108,7 @@ class Controller:
             return
 
         self._failure_streak = 0
-        target = interpolate(self._settings.curve, temp)
+        target = self._policy(self._settings.curve, temp)
 
         if target is None:
             self._pending_down = None
@@ -172,4 +169,4 @@ class Controller:
         return True
 
 
-__all__ = ["Controller", "EventSink"]
+__all__ = ["Controller"]

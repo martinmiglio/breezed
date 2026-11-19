@@ -10,7 +10,7 @@ that contract. It is advisory — enforced in code review, not by tooling.
 | Layer | Modules | Responsibility | Touches I/O? |
 | --- | --- | --- | --- |
 | **Domain** (innermost) | `domain/types`, `domain/ports`, `domain/curve`, `domain/settings` | Vocabulary & business rules: `FanPercent`/`TempC` types, `OperatingMode`/`EventType` enums, the port **Protocols**, curve interpolation, validated `Settings`. | No |
-| **Application** | `application/controller` | The control-loop use case: read → decide → command → emit. Owns the `EventSink` port. | Only via injected ports |
+| **Application** | `application/controller` | The control-loop use case: read → decide → command → emit. | Only via injected ports |
 | **Adapters** | `adapters/ipmi`, `adapters/config`, `adapters/watcher`, `adapters/logs`, `adapters/metrics` | Concrete I/O: `ipmitool` subprocess, TOML+env loading, mtime hot-reload, JSON logging, Prometheus socket. | Yes |
 | **Entry** (composition root) | `entry/runtime`, `entry/daemon`, `entry/daemon_cli`, `entry/common` | CLI parsing, dependency wiring, systemd deployment. | Yes (only here) |
 
@@ -27,11 +27,12 @@ that is a signal the type belongs in the domain.
 ## Ports & adapters
 
 - All **Protocols** (the app's interface vocabulary) live in `domain/ports.py`:
-  `TempReader`, `FanCommander`. The output-side `EventSink` **should also live
-  here** (see Cleanup backlog).
+  `TempReader`, `FanCommander`, `EventSink`, and `SpeedPolicy`.
 - Adapters conform to ports **structurally** (`runtime_checkable` Protocols); they
   never inherit them. `IpmiClient` satisfies both `TempReader` and `FanCommander`
-  without naming them.
+  without naming them; `LoggingEventSink` and `MetricsState` satisfy `EventSink`;
+  the `curve.interpolate` function satisfies the callable `SpeedPolicy` without a
+  wrapper class.
 - The application depends on the abstract port, never on a concrete adapter.
   Swapping IPMI for a mock or a different transport touches only `entry`, not
   the core.
@@ -39,10 +40,11 @@ that is a signal the type belongs in the domain.
 ## Application core
 
 `Controller` is the single use case. It is constructed with its collaborators
-injected: `reader: TempReader`, `commander: FanCommander`, `settings: Settings`,
-`sinks: Sequence[EventSink]`, and a `clock`. It performs no I/O of its own —
-every observable action goes through an injected port or is broadcast to the
-sinks.
+injected: `reader: TempReader`, `commander: FanCommander`, `policy: SpeedPolicy`,
+`settings: Settings`, `sinks: Sequence[EventSink]`, and a `clock`. It performs no
+I/O of its own — every observable action goes through an injected port or is
+broadcast to the sinks. The fan target comes from the injected `SpeedPolicy`
+(`curve.interpolate` today, a PID policy later), never from a direct import.
 
 Events fan out: `_emit` broadcasts an `EventType` to every sink (logs + metrics
 today). The core does not know which sinks exist.
@@ -92,21 +94,3 @@ Tests mirror the source layering (`tests/domain`, `tests/application`,
 `tests/adapters`, `tests/entry`). Unit tests for domain/application must not
 touch real I/O — inject fakes for ports (`clock`, `reader`/`commander`,
 `FileOps`, `CommandRunner`). This mirroring is the proof the boundaries hold.
-
-## Target-state cleanup (backlog)
-
-These describe the intended end state; current code diverges slightly. Treat
-them as the rule to converge on, not as optional.
-
-- **Move `EventSink` into `domain/ports.py`.** Today it is defined in
-  `application/controller.py`. As an output port it belongs with the other
-  Protocols.
-- **Introduce a `SpeedPolicy` port.** `Controller` currently calls
-  `curve.interpolate` directly. Extract a `SpeedPolicy` Protocol (in
-  `domain/ports.py`) that `interpolate` implements, so a future PID policy can be
-  swapped without touching the core. *Note: this reverses the earlier "collapse
-  SpeedPolicy seam" refactor — only do it when a second policy is actually
-  planned.*
-- **Known current divergences:** `EventSink` still lives in
-  `application/controller.py`; `SpeedPolicy` is not yet a port. These are gaps to
-  close, not precedents to follow.
