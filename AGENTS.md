@@ -52,8 +52,3 @@ In `entry/runtime.py` (runtime cmds) or `entry/daemon_cli.py` (daemon cmds):
 1. Add the member to `EventType` in `domain/types.py`.
 2. Emit it from `Controller` via `self._emit(EventType.X, **fields)`.
 3. Ensure every `EventSink` (`LoggingEventSink`, `MetricsState`) handles or ignores it.
-
-## Notes
-- `EventSink` and `SpeedPolicy` are `domain/ports.py` Protocols. Wire the real
-  policy (`curve.interpolate`) in `entry/`; `Controller` never imports it.
-See `ARCHITECTURE.md` for the dependency-direction contract.
