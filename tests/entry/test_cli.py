@@ -77,10 +77,12 @@ class FakeClient:
         temps: list[TempC] | None = None,
         *,
         raise_on_read: IpmiError | None = None,
+        raise_on_enable_auto: IpmiError | None = None,
     ) -> None:
         self.temps = list(temps) if temps is not None else []
         self.commands: list[str] = []
         self.raise_on_read = raise_on_read
+        self.raise_on_enable_auto = raise_on_enable_auto
 
     def read_max_cpu_temp(self) -> TempC:
         if self.raise_on_read is not None:
@@ -93,6 +95,8 @@ class FakeClient:
         return [("FAN_1", 4320)]
 
     def enable_auto(self) -> None:
+        if self.raise_on_enable_auto is not None:
+            raise self.raise_on_enable_auto
         self.commands.append("auto")
 
     def disable_auto(self) -> None:
@@ -430,6 +434,30 @@ def test_run_ipmi_failures_force_auto_then_shutdown_restores_auto(
     ]
     assert len(forced) == 1
     assert client.commands.count("auto") == 1
+
+
+def test_run_write_failure_does_not_exit_or_flood_fatal_events(
+    runner: CliRunner, config_dir: Path, install_deps
+):
+    write_config(config_dir)
+    client = install_deps(
+        FakeClient(
+            raise_on_read=IpmiError("sdr failed"),
+            raise_on_enable_auto=IpmiError("auto failed"),
+        ),
+        scripted_wait({}, [False, False, False, False]),
+    )
+    result = runner.invoke(app, ["run"], catch_exceptions=False)
+    assert result.exit_code == 0
+    events = log_events(result.stdout)
+    assert [e for e in events if e.get("event") == "fatal"] == []
+    write_errors = [
+        e for e in events if e.get("event") == "ipmi_error" and e.get("operation") == "enable_auto"
+    ]
+    assert len(write_errors) == 2
+    assert [e.get("failures") for e in write_errors] == [1, 2]
+    assert [e.get("reason") for e in write_errors] == ["read_failures", "read_failures"]
+    assert client.commands == []
 
 
 def test_run_fatal_crash_emits_structured_error_event(runner: CliRunner, config_dir: Path):

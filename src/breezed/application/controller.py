@@ -39,15 +39,56 @@ class Controller:
         self._state = OperatingMode.UNKNOWN
         self._last_pct: FanPercent | None = None
         self._failure_streak = 0
+        self._write_failures = 0
         self._pending_down: tuple[FanPercent, float] | None = None
 
     def _emit(self, event: EventType, /, **fields: object) -> None:
         for sink in self._sinks:
             sink.emit(event, **fields)
 
+    def _command(self, operation: str, call: Callable[[], None], *, reason: str) -> bool:
+        """Run one commander write; report a failure instead of letting it escape.
+
+        An IPMI write timeout must not kill the control loop: the caller leaves
+        its state untouched, so the next tick can retry from the last known-good
+        state. Failures are emitted with the operation, reason, and the current
+        consecutive-write-failure count.
+        """
+        try:
+            call()
+        except IpmiError as exc:
+            self._write_failures += 1
+            self._emit(
+                EventType.IPMI_ERROR,
+                operation=operation,
+                reason=reason,
+                failures=self._write_failures,
+                error=str(exc),
+            )
+            return False
+        self._write_failures = 0
+        return True
+
+    def _apply_speed(self, pct: FanPercent, target: int, *, reason: str) -> bool:
+        if not self._command(
+            "set_manual_pct",
+            lambda: self._commander.set_manual_pct(pct),
+            reason=reason,
+        ):
+            return False
+        self._last_pct = pct
+        self._emit(
+            EventType.SPEED_CHANGE,
+            fan_pct=pct,
+            target_pct=target,
+            reason=reason,
+        )
+        return True
+
     def _force_auto(self, reason: str, **fields: object) -> None:
+        if not self._command("enable_auto", self._commander.enable_auto, reason=reason):
+            return
         old = self._state.value
-        self._commander.enable_auto()
         self._state = OperatingMode.AUTO
         self._emit(
             EventType.MODE_CHANGE,
@@ -58,9 +99,17 @@ class Controller:
         )
 
     def _enter_manual(self, pct: FanPercent, target: int) -> None:
+        if not self._command(
+            "disable_auto", self._commander.disable_auto, reason="temp_under_curve"
+        ):
+            return
+        if not self._command(
+            "set_manual_pct",
+            lambda: self._commander.set_manual_pct(pct),
+            reason="temp_under_curve",
+        ):
+            return
         old = self._state.value
-        self._commander.disable_auto()
-        self._commander.set_manual_pct(pct)
         self._state = OperatingMode.MANUAL
         self._last_pct = pct
         self._pending_down = None
@@ -87,15 +136,8 @@ class Controller:
             )
         elif self._clock() - self._pending_down[1] >= self._settings.step_down_hysteresis_s:
             applied = self._pending_down[0]
-            self._commander.set_manual_pct(applied)
-            self._last_pct = applied
-            self._pending_down = None
-            self._emit(
-                EventType.SPEED_CHANGE,
-                fan_pct=applied,
-                target_pct=target,
-                reason="hysteresis_elapsed",
-            )
+            if self._apply_speed(applied, target, reason="hysteresis_elapsed"):
+                self._pending_down = None
 
     def tick(self) -> None:
         try:
@@ -129,15 +171,8 @@ class Controller:
                     assert self._last_pct is not None
                     last_pct = self._last_pct
                     if target > last_pct:
-                        self._commander.set_manual_pct(pct)
-                        self._last_pct = pct
+                        self._apply_speed(pct, target, reason="temp_rise")
                         self._pending_down = None
-                        self._emit(
-                            EventType.SPEED_CHANGE,
-                            fan_pct=pct,
-                            target_pct=target,
-                            reason="temp_rise",
-                        )
                     elif target < last_pct:
                         self._gate_downward(target, pct)
                     else:
@@ -152,13 +187,13 @@ class Controller:
         )
 
     def shutdown(self) -> None:
-        """Restore AUTO unless already there or no command was ever issued."""
+        """Restore AUTO unless already there or no command was ever issued.
+
+        A failing enable_auto is reported as an IPMI_ERROR event, never raised.
+        """
         if self._state is not OperatingMode.MANUAL:
             return
-        try:
-            self._force_auto("shutdown")
-        except IpmiError as exc:
-            self._emit(EventType.IPMI_ERROR, error=str(exc))
+        self._force_auto("shutdown")
 
     def replace_settings(self, new_settings: Settings) -> bool:
         """Swap in hot-reloaded settings; False (plus CONFIG_ERROR event) on invalid curve."""
