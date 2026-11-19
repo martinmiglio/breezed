@@ -395,25 +395,40 @@ def test_daemon_install_builds_sudo_argv(
     ]
 
 
-def test_daemon_install_is_quiet_by_default(
-    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("command", "extra_args", "needs_staging", "stderr_needle"),
+    [
+        ("install", [], True, "The following privileged steps will run:"),
+        ("install", ["--dry-run"], True, "systemctl enable --now breezed"),
+        ("uninstall", [], False, "The following privileged steps will run:"),
+        ("uninstall", ["--dry-run"], False, "systemctl disable --now breezed"),
+    ],
+)
+def test_daemon_lifecycle_is_quiet_by_default(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    extra_args: list[str],
+    needs_staging: bool,
+    stderr_needle: str,
 ) -> None:
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/home/martin/.local/bin/uv")
+    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
     monkeypatch.setattr(cli.getpass, "getuser", lambda: "martin")
     monkeypatch.setattr(cli, "_resolve_sudo", lambda: "/usr/bin/sudo")
-    monkeypatch.setattr(cli, "_resolve_self", lambda: Path("/home/martin/.local/bin/breezed"))
+    monkeypatch.setattr(cli, "_resolve_self", lambda: Path("/usr/local/bin/breezed"))
     monkeypatch.setattr(cli, "_run_sudo", lambda _argv: None)
 
-    result = cli_runner.invoke(
-        app,
-        ["daemon", "install", "--staging-dir", str(tmp_path / "stage")],
-        catch_exceptions=False,
-    )
+    args = ["daemon", command]
+    if needs_staging:
+        args += ["--staging-dir", str(tmp_path / "stage")]
+    args += extra_args
+    result = cli_runner.invoke(app, args, catch_exceptions=False)
 
     assert result.exit_code == 0
     assert result.stdout == ""
-    assert "privileged steps" in result.stderr
+    assert stderr_needle in result.stderr
 
 
 def test_daemon_install_dry_run_prints_plan_without_sudo(
@@ -447,25 +462,6 @@ def test_daemon_install_dry_run_prints_plan_without_sudo(
     assert "uv tool install runtime under /opt" in payload["steps"]
     assert "systemctl enable --now breezed" in payload["steps"]
     assert "privileged steps" in result.stderr
-
-
-def test_daemon_install_dry_run_is_quiet_by_default(
-    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
-    monkeypatch.setattr(cli.getpass, "getuser", lambda: "martin")
-
-    result = cli_runner.invoke(
-        app,
-        ["daemon", "install", "--staging-dir", str(tmp_path / "stage"), "--dry-run"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert result.stdout == ""
-    assert "privileged steps" in result.stderr
-    assert "systemctl enable --now breezed" in result.stderr
 
 
 def test_daemon_install_as_root_applies_in_process(
@@ -557,23 +553,6 @@ def test_daemon_uninstall_builds_sudo_argv(
     ]
 
 
-def test_daemon_uninstall_is_quiet_by_default(
-    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
-    monkeypatch.setattr(cli, "_resolve_sudo", lambda: "/usr/bin/sudo")
-    monkeypatch.setattr(cli, "_resolve_self", lambda: Path("/usr/local/bin/breezed"))
-    monkeypatch.setattr(cli, "_run_sudo", lambda _argv: None)
-
-    result = cli_runner.invoke(app, ["daemon", "uninstall"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    assert result.stdout == ""
-    assert "privileged steps" in result.stderr
-    assert "systemctl disable --now breezed" in result.stderr
-
-
 def test_daemon_uninstall_dry_run_prints_plan_and_retained_state(
     cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -594,20 +573,6 @@ def test_daemon_uninstall_dry_run_prints_plan_and_retained_state(
     assert payload["event"] == "uninstall_planned"
     assert payload["keeps"] == ["/etc/breezed.env", "/etc/breezed"]
     assert "uv tool uninstall breezed" in payload["steps"]
-    assert "systemctl disable --now breezed" in result.stderr
-
-
-def test_daemon_uninstall_dry_run_is_quiet_by_default(
-    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(cli, "_resolve_uv", lambda: "/usr/local/bin/uv")
-
-    result = cli_runner.invoke(app, ["daemon", "uninstall", "--dry-run"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    assert result.stdout == ""
-    assert "uv tool uninstall breezed" in result.stderr
     assert "systemctl disable --now breezed" in result.stderr
 
 
