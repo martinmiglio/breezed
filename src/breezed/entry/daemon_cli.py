@@ -84,6 +84,9 @@ def daemon_install(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the privileged steps without escalating")
     ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print a machine-readable result to stdout")
+    ] = False,
 ) -> None:
     """Stage the unit/env/config, then install the system service via one sudo prompt."""
     resolved_source = str((source or Path.cwd()).resolve())
@@ -102,12 +105,14 @@ def daemon_install(
             _print_results(apply(stage_dir, owner, resolved_uv, resolved_source))
         except DaemonError as err:
             _fail(err, code=1)
-        print(json.dumps({"event": "install_complete"}))
+        if as_json:
+            print(json.dumps({"event": "install_complete"}))
         return
 
     _print_step_plan(steps, "The following privileged steps will run:")
     if dry_run:
-        print(json.dumps({"event": "install_planned", "steps": [step.label for step in steps]}))
+        if as_json:
+            print(json.dumps({"event": "install_planned", "steps": [step.label for step in steps]}))
         return
     argv = [
         _resolve_sudo(),
@@ -124,7 +129,8 @@ def daemon_install(
         resolved_source,
     ]
     _run_sudo(argv)
-    print(json.dumps({"event": "install_complete"}))
+    if as_json:
+        print(json.dumps({"event": "install_complete"}))
 
 
 @daemon_app.command("apply", hidden=True)
@@ -156,6 +162,9 @@ def daemon_uninstall(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the privileged steps without escalating")
     ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print a machine-readable result to stdout")
+    ] = False,
 ) -> None:
     """Stop and remove the service and runtime via one sudo prompt; keeps /etc/breezed.env/."""
     resolved_uv = _resolve_uv()
@@ -167,24 +176,27 @@ def daemon_uninstall(
             _print_results(remove(resolved_uv))
         except DaemonError as err:
             _fail(err, code=1)
-        print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
+        if as_json:
+            print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
         return
 
     _print_step_plan(steps, "The following privileged steps will run:")
     if dry_run:
-        print(
-            json.dumps(
-                {
-                    "event": "uninstall_planned",
-                    "keeps": _KEEP,
-                    "steps": [step.label for step in steps],
-                }
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "event": "uninstall_planned",
+                        "keeps": _KEEP,
+                        "steps": [step.label for step in steps],
+                    }
+                )
             )
-        )
         return
     argv = [_resolve_sudo(), str(_resolve_self()), "daemon", "remove", "--uv", resolved_uv]
     _run_sudo(argv)
-    print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
+    if as_json:
+        print(json.dumps({"event": "uninstall_complete", "keeps": _KEEP}))
 
 
 @daemon_app.command("remove", hidden=True)
