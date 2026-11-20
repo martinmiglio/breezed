@@ -10,7 +10,6 @@ pub mod adapters;
 pub mod application;
 pub mod domain;
 pub mod entry;
-mod json;
 
 /// Version reported by `breezed --version` and `daemon status`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

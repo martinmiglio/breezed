@@ -1,16 +1,17 @@
 # breezed (Rust)
 
-A parity-focused Rust rewrite of the Python `breezed` fan controller. The Python
-package remains the reference implementation. The Rust port has passed a live
-iDRAC round (validate/status/set/run/metrics/systemd install) on the reference
-host and is installed there as the `breezed` service.
+A Rust port of the Python `breezed` fan controller. The Python package remains
+the reference implementation. The Rust port has passed a live iDRAC round
+(validate/status/set/run/metrics/systemd install) on the reference host and is
+installed there as the `breezed` service.
 
-The architecture deliberately mirrors the original onion/hexagonal layers so
-the two implementations stay easy to compare. Behaviour, CLI surface, JSON
-output, IPMI argv/env, and Prometheus output are ported one-for-one, except that
-the systemd installer now installs the Rust binary instead of a Python/uv
-runtime. The code is written in Rust idioms (typed events, traits for ports,
-`Result` errors) rather than transliterated.
+The architecture mirrors the original onion/hexagonal layers, with Rust idioms
+(typed events, traits for ports, `Result` errors) throughout. The CLI surface,
+JSON field names and shapes, event vocabulary, IPMI argv/env, config keys,
+metric names, exit codes, and systemd behaviour match the Python CLI. The
+systemd installer now installs the Rust binary instead of a Python/uv runtime.
+Machine output is produced by `serde_json`, so whitespace and key order are not
+byte-compatible; see `PARITY.md` for the exact contract.
 
 ## Layout
 
@@ -95,9 +96,10 @@ Coverage includes:
 
 - curve interpolation and ties-to-even rounding, validated settings and config
   precedence, controller hysteresis/failure fallbacks, IPMI argv/env and
-  redaction, JSON log shape, metrics rendering and HTTP endpoint;
-- end-to-end CLI output/exit-code parity, including a graceful SIGTERM
-  shutdown with a live metrics scrape;
+  redaction, JSON log fields, metrics rendering and HTTP endpoint;
+- end-to-end CLI output/exit-code compatibility, including a graceful SIGTERM
+  shutdown with a live metrics scrape, invalid identity types, and metrics-port
+  bounds;
 - daemon planning/idempotence/sudo argv with fake `sudo`/`systemctl`, and the
   fixed binary-install sequence;
 - an architecture guard for layer boundaries and `unsafe`.
@@ -138,16 +140,25 @@ The Rust and Python binaries can be compared side by side by pointing
 
 ## Known intentional differences
 
+- Machine JSON uses `serde_json`: field names and shapes are stable, but spacing,
+  escaping, and key order are not byte-identical to Python's `json.dumps`.
+- Validation reports native Rust field errors (and may list several at once)
+  instead of pydantic prose.
 - Help is rendered by clap rather than Typer: same command names, different
   spacing/punctuation, clap adds `-h`/`-V`, and the daemon installer flags are
   deliberately smaller (`--dry-run`/`--json`, plus hidden `apply --owner`).
 - TOML syntax-error prose comes from the Rust parser; the `config: invalid TOML
-  in PATH:` prefix and exit code are unchanged.
+  in PATH:` prefix and exit code are unchanged, and source snippets that could
+  echo a password are stripped.
 - Rust backtraces appear in fatal `traceback` fields instead of Python
   tracebacks.
 - Metrics HTTP headers (`Server`, `Date`) are minimal; the body is byte-identical.
-- `--metrics-port` is parsed as a `u16`, so a value above 65535 is a usage error
-  (`2`) instead of a late bind-time crash.
+- `--metrics-port` is parsed as a `u16`, and config-file `metrics_port` must be
+  in `1..=65535`; out-of-range values are usage errors (`2`) instead of late
+  bind-time crashes.
+- Curve temperatures outside `i32` are rejected; Python accepted any integer.
+- A missing `ipmitool` binary is a retryable `IpmiError` (fail-safe to AUTO)
+  rather than an uncaught exception.
 - The binary version is pinned to `0.3.1` in `Cargo.toml` for now.
 - `daemon install` is Rust-native: it copies the running binary to
   `/usr/local/bin/breezed` with one sudo prompt. It intentionally diverges from

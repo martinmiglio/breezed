@@ -1,18 +1,18 @@
 //! Structured JSON logging and the [`EventSink`] adapter.
 //!
 //! Logs are the machine output: one JSON object per line on stdout by default,
-//! human-readable lines under `--verbose`. Field order matches the original
-//! Python formatter (`event`, payload fields, then `ts`, `level`, `logger`).
+//! human-readable lines under `--verbose`. Field names and shapes are stable;
+//! serialization itself is delegated to `serde_json`.
 
 use std::io::{self, Write};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::{Local, Utc};
+use serde_json::{Value, json};
 
 use crate::domain::events::Event;
 use crate::domain::ports::EventSink;
 use crate::domain::types::FanPercent;
-use crate::json::Json;
 
 /// Take a lock even if a previous holder panicked; logging must keep working.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -27,7 +27,7 @@ pub fn spec_event_names() -> Vec<&'static str> {
         .collect()
 }
 
-/// Current UTC timestamp in the original `2026-01-01T00:00:00Z` shape.
+/// Current UTC timestamp in the `2026-01-01T00:00:00Z` shape.
 pub fn utc_timestamp() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
@@ -41,25 +41,22 @@ pub fn render_json(event: &Event, ts: &str) -> String {
     render_record(
         event.kind().as_str(),
         event.level(),
-        event_fields(event),
+        &event_fields(event),
         ts,
     )
 }
 
 /// Serialize an arbitrary record with the same envelope as event lines.
-pub fn render_record(
-    event_name: &str,
-    level: &str,
-    fields: Vec<(String, Json)>,
-    ts: &str,
-) -> String {
-    let mut object = Vec::with_capacity(fields.len() + 4);
-    object.push(("event".to_owned(), Json::from(event_name)));
-    object.extend(fields);
-    object.push(("ts".to_owned(), Json::from(ts)));
-    object.push(("level".to_owned(), Json::from(level)));
-    object.push(("logger".to_owned(), Json::from("breezed")));
-    Json::Object(object).to_python_string()
+pub fn render_record(event_name: &str, level: &str, fields: &[(&str, Value)], ts: &str) -> String {
+    let mut object = serde_json::Map::with_capacity(fields.len() + 4);
+    object.insert("event".to_owned(), json!(event_name));
+    for (key, value) in fields {
+        object.insert((*key).to_owned(), value.clone());
+    }
+    object.insert("ts".to_owned(), json!(ts));
+    object.insert("level".to_owned(), json!(level));
+    object.insert("logger".to_owned(), json!("breezed"));
+    Value::Object(object).to_string()
 }
 
 /// Render one event in the human-readable `--verbose` shape.
@@ -67,7 +64,7 @@ pub fn render_human(event: &Event, ts: &str) -> String {
     format!("[{ts}] {:<8} {}", event.level(), event.kind())
 }
 
-fn event_fields(event: &Event) -> Vec<(String, Json)> {
+fn event_fields(event: &Event) -> Vec<(&'static str, Value)> {
     match event {
         Event::Startup | Event::ConfigReload | Event::Shutdown => Vec::new(),
         Event::Poll {
@@ -76,13 +73,10 @@ fn event_fields(event: &Event) -> Vec<(String, Json)> {
             mode,
             target_pct,
         } => vec![
-            ("temp_c".to_owned(), Json::from(temp_c.0)),
-            (
-                "fan_pct".to_owned(),
-                Json::from(fan_pct.map(FanPercent::get)),
-            ),
-            ("mode".to_owned(), Json::from(mode.as_str())),
-            ("target_pct".to_owned(), Json::from(*target_pct)),
+            ("temp_c", json!(temp_c.0)),
+            ("fan_pct", json!(fan_pct.map(FanPercent::get))),
+            ("mode", json!(mode.as_str())),
+            ("target_pct", json!(target_pct)),
         ],
         Event::ModeChange {
             from,
@@ -92,15 +86,15 @@ fn event_fields(event: &Event) -> Vec<(String, Json)> {
             failures,
         } => {
             let mut fields = vec![
-                ("from".to_owned(), Json::from(from.as_str())),
-                ("to".to_owned(), Json::from(to.as_str())),
-                ("reason".to_owned(), Json::from(reason.as_str())),
+                ("from", json!(from.as_str())),
+                ("to", json!(to.as_str())),
+                ("reason", json!(reason.as_str())),
             ];
             if let Some(temp_c) = temp_c {
-                fields.push(("temp_c".to_owned(), Json::from(temp_c.0)));
+                fields.push(("temp_c", json!(temp_c.0)));
             }
             if let Some(failures) = failures {
-                fields.push(("failures".to_owned(), Json::from(i64::from(*failures))));
+                fields.push(("failures", json!(failures)));
             }
             fields
         }
@@ -109,20 +103,18 @@ fn event_fields(event: &Event) -> Vec<(String, Json)> {
             target_pct,
             reason,
         } => vec![
-            ("fan_pct".to_owned(), Json::from(fan_pct.get())),
-            ("target_pct".to_owned(), Json::from(*target_pct)),
-            ("reason".to_owned(), Json::from(reason.as_str())),
+            ("fan_pct", json!(fan_pct.get())),
+            ("target_pct", json!(target_pct)),
+            ("reason", json!(reason.as_str())),
         ],
         Event::HysteresisWait {
             target_pct,
             hysteresis_s,
         } => vec![
-            ("target_pct".to_owned(), Json::from(*target_pct)),
-            ("hysteresis_s".to_owned(), Json::from(*hysteresis_s)),
+            ("target_pct", json!(target_pct)),
+            ("hysteresis_s", json!(hysteresis_s)),
         ],
-        Event::ConfigError { error } => {
-            vec![("error".to_owned(), Json::from(error.as_str()))]
-        }
+        Event::ConfigError { error } => vec![("error", json!(error))],
         Event::IpmiError {
             operation,
             reason,
@@ -131,13 +123,13 @@ fn event_fields(event: &Event) -> Vec<(String, Json)> {
         } => {
             let mut fields = Vec::with_capacity(4);
             if let Some(operation) = operation {
-                fields.push(("operation".to_owned(), Json::from(operation.as_str())));
+                fields.push(("operation", json!(operation.as_str())));
             }
             if let Some(reason) = reason {
-                fields.push(("reason".to_owned(), Json::from(reason.as_str())));
+                fields.push(("reason", json!(reason.as_str())));
             }
-            fields.push(("failures".to_owned(), Json::from(i64::from(*failures))));
-            fields.push(("error".to_owned(), Json::from(error.as_str())));
+            fields.push(("failures", json!(failures)));
+            fields.push(("error", json!(error)));
             fields
         }
     }
@@ -165,11 +157,11 @@ impl LoggingSink {
 
     /// Emit a warning as `event: <message>`.
     pub fn warn(&self, message: &str) {
-        self.record(message, "WARNING", Vec::new());
+        self.record(message, "WARNING", &[]);
     }
 
     /// Emit a non-vocabulary diagnostic record (fatal errors, warnings).
-    pub fn record(&self, event_name: &str, level: &str, fields: Vec<(String, Json)>) {
+    pub fn record(&self, event_name: &str, level: &str, fields: &[(&str, Value)]) {
         let line = if self.verbose {
             format!("[{ts}] {level:<8} {event_name}", ts = local_timestamp())
         } else {
@@ -262,10 +254,11 @@ mod tests {
         assert_eq!(records[1]["to"], "auto");
         assert_eq!(records[1]["reason"], "temp_above_curve");
         assert_eq!(records[1]["temp_c"], 80);
+        assert!(records[1].get("failures").is_none());
     }
 
     #[test]
-    fn json_uses_python_field_order_and_spacing() {
+    fn speed_change_has_the_documented_fields() {
         let line = render_json(
             &Event::SpeedChange {
                 fan_pct: FanPercent::from_validated(40),
@@ -274,15 +267,19 @@ mod tests {
             },
             "2026-01-01T00:00:00Z",
         );
-        assert_eq!(
-            line,
-            r#"{"event": "speed_change", "fan_pct": 40, "target_pct": 40, "reason": "temp_rise", "ts": "2026-01-01T00:00:00Z", "level": "INFO", "logger": "breezed"}"#
-        );
+        let record: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(record["event"], "speed_change");
+        assert_eq!(record["fan_pct"], 40);
+        assert_eq!(record["target_pct"], 40);
+        assert_eq!(record["reason"], "temp_rise");
+        assert_eq!(record["ts"], "2026-01-01T00:00:00Z");
+        assert_eq!(record["level"], "INFO");
+        assert_eq!(record["logger"], "breezed");
     }
 
     #[test]
-    fn ipmi_error_field_order_matches_original() {
-        let write_error = render_json(
+    fn ipmi_error_omits_absent_optional_fields() {
+        let write_error: Value = serde_json::from_str(&render_json(
             &Event::IpmiError {
                 operation: Some(Operation::EnableAuto),
                 reason: Some(Reason::ReadFailures),
@@ -290,11 +287,15 @@ mod tests {
                 error: "boom".to_owned(),
             },
             "ts",
-        );
-        assert!(write_error.starts_with(
-            r#"{"event": "ipmi_error", "operation": "enable_auto", "reason": "read_failures", "failures": 2, "error": "boom""#
-        ));
-        let read_error = render_json(
+        ))
+        .unwrap();
+        assert_eq!(write_error["event"], "ipmi_error");
+        assert_eq!(write_error["operation"], "enable_auto");
+        assert_eq!(write_error["reason"], "read_failures");
+        assert_eq!(write_error["failures"], 2);
+        assert_eq!(write_error["error"], "boom");
+
+        let read_error: Value = serde_json::from_str(&render_json(
             &Event::IpmiError {
                 operation: None,
                 reason: None,
@@ -302,11 +303,12 @@ mod tests {
                 error: "sdr failed".to_owned(),
             },
             "ts",
-        );
-        assert!(
-            read_error
-                .starts_with(r#"{"event": "ipmi_error", "failures": 1, "error": "sdr failed""#)
-        );
+        ))
+        .unwrap();
+        assert_eq!(read_error["failures"], 1);
+        assert_eq!(read_error["error"], "sdr failed");
+        assert!(read_error.get("operation").is_none());
+        assert!(read_error.get("reason").is_none());
     }
 
     #[test]
@@ -395,13 +397,10 @@ mod tests {
         sink.record(
             "fatal",
             "ERROR",
-            vec![
-                ("error".to_owned(), Json::from("RuntimeError")),
-                ("detail".to_owned(), Json::from("disk on fire")),
-                (
-                    "traceback".to_owned(),
-                    Json::from("Traceback (most recent call last)"),
-                ),
+            &[
+                ("error", json!("RuntimeError")),
+                ("detail", json!("disk on fire")),
+                ("traceback", json!("Traceback (most recent call last)")),
             ],
         );
         let record = &records(&buffer)[0];

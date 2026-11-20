@@ -1,9 +1,9 @@
 //! TOML config loader: structural adapter only.
 //!
-//! Reads the file, merges environment overrides, and hands raw values to the
+//! Reads the file, merges environment overrides, and hands plain values to the
 //! domain [`Settings`] validator. Every business rule lives in `domain`; this
 //! module only handles key presence, TOML type shape, env/file precedence, and
-//! error wrapping.
+//! field-naming errors.
 
 use std::fs;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::path::Path;
 use thiserror::Error;
 use toml::{Table, Value};
 
-use crate::domain::settings::{RawInt, Settings, SettingsInput};
+use crate::domain::settings::{CurveRowInput, Settings, SettingsInput};
 
 /// Field-naming failure; also wraps TOML decode, OS, and validation errors.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -78,11 +78,7 @@ pub fn load_settings_with(
 ) -> Result<Settings, ConfigError> {
     let path = path.as_ref();
     let content = fs::read_to_string(path).map_err(|error| {
-        ConfigError::new(format!(
-            "config: cannot read {}: {}",
-            path.display(),
-            io_message(path, &error)
-        ))
+        ConfigError::new(format!("config: cannot read {}: {error}", path.display()))
     })?;
     let data: Table = content.parse().map_err(|error: toml::de::Error| {
         ConfigError::new(format!(
@@ -92,22 +88,22 @@ pub fn load_settings_with(
         ))
     })?;
 
-    let settings_table = data
-        .get("settings")
-        .and_then(Value::as_table)
-        .cloned()
-        .unwrap_or_default();
+    let settings_table = match data.get("settings") {
+        None => Table::new(),
+        Some(Value::Table(table)) => table.clone(),
+        Some(_) => return Err(ConfigError::new("settings: expected a table")),
+    };
 
     let mut input = SettingsInput {
-        host: string_field(&settings_table, "host"),
-        user: string_field(&settings_table, "user"),
-        password: string_field(&settings_table, "password"),
+        host: string_field(&settings_table, "host")?,
+        user: string_field(&settings_table, "user")?,
+        password: string_field(&settings_table, "password")?,
         curve: curve_input(&data)?,
-        poll_interval_s: raw_int_field(&settings_table, "poll_interval_s"),
-        read_failure_limit: raw_int_field(&settings_table, "read_failure_limit"),
-        step_down_hysteresis_s: raw_int_field(&settings_table, "step_down_hysteresis_s"),
-        metrics_port: raw_int_field(&settings_table, "metrics_port"),
-        ipmitool_path: string_field(&settings_table, "ipmitool_path"),
+        poll_interval_s: int_field(&settings_table, "poll_interval_s")?,
+        read_failure_limit: int_field(&settings_table, "read_failure_limit")?,
+        step_down_hysteresis_s: int_field(&settings_table, "step_down_hysteresis_s")?,
+        metrics_port: int_field(&settings_table, "metrics_port")?,
+        ipmitool_path: string_field(&settings_table, "ipmitool_path")?,
     };
 
     for (name, env_key) in ENV_OVERRIDES {
@@ -125,8 +121,8 @@ pub fn load_settings_with(
     Settings::from_input(input).map_err(|errors| {
         ConfigError::new(
             errors
-                .into_iter()
-                .map(|error| format!("Value error, {error}"))
+                .iter()
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("; "),
         )
@@ -170,74 +166,52 @@ fn is_snippet_line(line: &str) -> bool {
         .is_some_and(|(gutter, _)| !gutter.is_empty() && gutter.trim().parse::<usize>().is_ok())
 }
 
-fn string_field(table: &Table, key: &str) -> Option<String> {
-    table.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
-fn raw_int_field(table: &Table, key: &str) -> Option<RawInt> {
-    table.get(key).map(raw_int)
-}
-
-fn raw_int(value: &Value) -> RawInt {
-    match value {
-        Value::Integer(value) => RawInt::int(*value),
-        other => RawInt::wrong(python_type_name(other)),
+fn string_field(table: &Table, key: &str) -> Result<Option<String>, ConfigError> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(ConfigError::new(format!("{key}: expected a string"))),
     }
 }
 
-const fn python_type_name(value: &Value) -> &'static str {
-    match value {
-        Value::String(_) => "str",
-        Value::Integer(_) => "int",
-        Value::Float(_) => "float",
-        Value::Boolean(_) => "bool",
-        Value::Datetime(_) => "datetime",
-        Value::Array(_) => "list",
-        Value::Table(_) => "dict",
+fn int_field(table: &Table, key: &str) -> Result<Option<i64>, ConfigError> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(Value::Integer(value)) => Ok(Some(*value)),
+        Some(_) => Err(ConfigError::new(format!("{key}: expected an integer"))),
     }
 }
 
-fn curve_input(
-    data: &Table,
-) -> Result<Option<Vec<crate::domain::settings::CurveRowInput>>, ConfigError> {
+fn curve_input(data: &Table) -> Result<Option<Vec<CurveRowInput>>, ConfigError> {
     let Some(value) = data.get("curve") else {
         return Ok(None);
     };
     let Value::Array(rows) = value else {
-        return Err(ConfigError::new(
-            "Value error, curve: expected an array of tables",
-        ));
+        return Err(ConfigError::new("curve: expected an array of tables"));
     };
     let mut parsed = Vec::with_capacity(rows.len());
-    for row in rows {
-        let Some(table) = row.as_table() else {
-            return Err(ConfigError::new(
-                "Value error, curve: expected an array of tables",
-            ));
+    for (index, row) in rows.iter().enumerate() {
+        let Value::Table(table) = row else {
+            return Err(ConfigError::new(format!(
+                "curve[{index}]: expected a table"
+            )));
         };
-        parsed.push(crate::domain::settings::CurveRowInput {
-            temp_c: table
-                .get("temp_c")
-                .map_or_else(|| RawInt::wrong("NoneType"), raw_int),
-            fan_pct: table
-                .get("fan_pct")
-                .map_or_else(|| RawInt::wrong("NoneType"), raw_int),
+        parsed.push(CurveRowInput {
+            temp_c: row_int(table, index, "temp_c")?,
+            fan_pct: row_int(table, index, "fan_pct")?,
         });
     }
     Ok(Some(parsed))
 }
 
-fn io_message(path: &Path, error: &std::io::Error) -> String {
-    let description = match error.kind() {
-        std::io::ErrorKind::NotFound => "No such file or directory",
-        std::io::ErrorKind::PermissionDenied => "Permission denied",
-        std::io::ErrorKind::IsADirectory => "Is a directory",
-        _ => return error.to_string(),
-    };
-    error.raw_os_error().map_or_else(
-        || description.to_owned(),
-        |code| format!("[Errno {code}] {description}: '{}'", path.display()),
-    )
+fn row_int(table: &Table, index: usize, key: &str) -> Result<i64, ConfigError> {
+    match table.get(key) {
+        None => Err(ConfigError::new(format!("curve[{index}].{key}: missing"))),
+        Some(Value::Integer(value)) => Ok(*value),
+        Some(_) => Err(ConfigError::new(format!(
+            "curve[{index}].{key}: expected an integer"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -327,9 +301,8 @@ mod tests {
             "[settings]\npoll_interval_s = 5\n",
         );
         let error = load_settings(&path).unwrap_err().to_string();
-        assert!(error.contains("host"));
-        assert!(error.contains("user"));
-        assert!(error.starts_with("Value error, "));
+        assert!(error.contains("host: missing"));
+        assert!(error.contains("user: missing"));
     }
 
     #[test]
@@ -391,6 +364,47 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn non_string_identity_fields_are_rejected() {
+        for field in ["password", "ipmitool_path"] {
+            let dir = tempfile::tempdir().unwrap();
+            let body = format!("{IDENTITY}{field} = 42\n");
+            let path = write(dir.path(), "wrong_type.toml", &body);
+            let error = load_settings(&path).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("{field}: expected a string")),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_string_password_does_not_echo_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "numeric_password.toml",
+            &format!("{IDENTITY}password = 123456789\n"),
+        );
+        let error = load_settings(&path).unwrap_err().to_string();
+        assert!(!error.contains("123456789"), "{error}");
+    }
+
+    #[test]
+    fn metrics_port_above_u16_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "big_port.toml",
+            &format!("{IDENTITY}metrics_port = 70000\n"),
+        );
+        let error = load_settings(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("metrics_port must be in 1..=65535"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -543,14 +557,21 @@ mod tests {
     #[test]
     fn curve_type_shape_errors_are_wrapped() {
         let dir = tempfile::tempdir().unwrap();
-        for body in [
-            format!("curve = \"nope\"\n{IDENTITY}"),
-            format!("curve = [1]\n{IDENTITY}"),
-        ] {
-            let path = write(dir.path(), "shape.toml", &body);
-            let error = load_settings(&path).unwrap_err().to_string();
-            assert!(error.contains("expected an array of tables"), "{error}");
-        }
+        let path = write(
+            dir.path(),
+            "shape.toml",
+            &format!("curve = \"nope\"\n{IDENTITY}"),
+        );
+        let error = load_settings(&path).unwrap_err().to_string();
+        assert!(error.contains("expected an array of tables"), "{error}");
+
+        let path = write(
+            dir.path(),
+            "shape.toml",
+            &format!("curve = [1]\n{IDENTITY}"),
+        );
+        let error = load_settings(&path).unwrap_err().to_string();
+        assert!(error.contains("curve[0]: expected a table"), "{error}");
     }
 
     #[test]
@@ -562,11 +583,11 @@ mod tests {
             &format!("{IDENTITY}\n[[curve]]\ntemp_c = \"hot\"\nfan_pct = 5\n"),
         );
         let error = load_settings(&path).unwrap_err().to_string();
-        assert!(error.contains("curve[0].temp_c: expected an integer, got str"));
+        assert!(error.contains("curve[0].temp_c: expected an integer"));
     }
 
     #[test]
-    fn missing_row_cell_reports_nonetype() {
+    fn missing_row_cell_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
@@ -574,6 +595,14 @@ mod tests {
             &format!("{IDENTITY}\n[[curve]]\ntemp_c = 40\n"),
         );
         let error = load_settings(&path).unwrap_err().to_string();
-        assert!(error.contains("curve[0].fan_pct: expected an integer, got NoneType"));
+        assert!(error.contains("curve[0].fan_pct: missing"));
+    }
+
+    #[test]
+    fn non_table_settings_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "bad_settings.toml", "settings = 5\n");
+        let error = load_settings(&path).unwrap_err().to_string();
+        assert!(error.contains("settings: expected a table"));
     }
 }

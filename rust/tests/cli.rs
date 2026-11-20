@@ -61,9 +61,10 @@ fn set_issues_manual_then_speed_commands_and_prints_json() {
         .output()
         .unwrap();
     assert!(output.status.success());
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        stdout(&output),
-        "{\"event\": \"speed_change\", \"fan_pct\": 40}\n"
+        payload,
+        serde_json::json!({"event": "speed_change", "fan_pct": 40})
     );
     assert_eq!(
         world.calls(),
@@ -83,9 +84,10 @@ fn auto_enables_auto_mode() {
     let world = World::new(&["46"]);
     let output = world.run(&["auto"]);
     assert!(output.status.success());
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        stdout(&output),
-        "{\"event\": \"mode_change\", \"to\": \"auto\"}\n"
+        payload,
+        serde_json::json!({"event": "mode_change", "to": "auto"})
     );
     assert_eq!(
         world.calls(),
@@ -98,10 +100,14 @@ fn status_outputs_the_documented_json_schema() {
     let world = World::new(&["63"]);
     let output = world.run(&["status"]);
     assert!(output.status.success());
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        stdout(&output),
-        "{\"temp_c\": 63, \"fan_rpms\": [[\"FAN_1\", 4320], [\"FAN_2\", 4320], \
-         [\"FAN_3\", 4080], [\"FAN_4\", 0]], \"target_pct\": 10}\n"
+        payload,
+        serde_json::json!({
+            "temp_c": 63,
+            "fan_rpms": [["FAN_1", 4320], ["FAN_2", 4320], ["FAN_3", 4080], ["FAN_4", 0]],
+            "target_pct": 10,
+        })
     );
 }
 
@@ -185,10 +191,17 @@ fn validate_valid_config_prints_summary() {
     let world = World::new(&["46"]);
     let output = world.run(&["validate", "breezed.toml"]);
     assert!(output.status.success());
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        stdout(&output),
-        "{\"valid\": true, \"path\": \"breezed.toml\", \"host\": \"169.254.0.1\", \
-         \"poll_interval_s\": 1, \"curve_points\": 4, \"metrics_port\": null}\n"
+        payload,
+        serde_json::json!({
+            "valid": true,
+            "path": "breezed.toml",
+            "host": "169.254.0.1",
+            "poll_interval_s": 1,
+            "curve_points": 4,
+            "metrics_port": null,
+        })
     );
 }
 
@@ -210,7 +223,7 @@ fn validate_invalid_config_prints_valid_false_and_exits_2() {
 }
 
 #[test]
-fn validate_reports_missing_identity_with_pydantic_style_prefix() {
+fn validate_reports_missing_identity() {
     let world = World::new(&["46"]);
     world.write_file("noident.toml", "[settings]\npoll_interval_s = 5\n");
     let output = world.run(&["validate", "noident.toml"]);
@@ -218,8 +231,48 @@ fn validate_reports_missing_identity_with_pydantic_style_prefix() {
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         payload["error"],
-        "Value error, host: missing (set [settings].host or IDRAC_HOST); \
+        "host: missing (set [settings].host or IDRAC_HOST); \
          user: missing (set [settings].user or IDRAC_USER)"
+    );
+}
+
+#[test]
+fn validate_rejects_non_string_identity_fields() {
+    for field in ["password", "ipmitool_path"] {
+        let world = World::new(&["46"]);
+        world.write_file(
+            "wrong.toml",
+            &format!("[settings]\nhost = \"h\"\nuser = \"u\"\n{field} = 42\n"),
+        );
+        let output = world.run(&["validate", "wrong.toml"]);
+        assert_eq!(output.status.code(), Some(2), "{field}");
+        let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(payload["valid"], false);
+        assert!(
+            payload["error"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("{field}: expected a string")),
+            "{payload}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejects_an_out_of_range_metrics_port() {
+    let world = World::new(&["46"]);
+    world.write_file(
+        "bigport.toml",
+        "[settings]\nhost = \"h\"\nuser = \"u\"\nmetrics_port = 70000\n",
+    );
+    let output = world.run(&["validate", "bigport.toml"]);
+    assert_eq!(output.status.code(), Some(2));
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("metrics_port must be in 1..=65535")
     );
 }
 

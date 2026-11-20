@@ -25,7 +25,7 @@ use crate::domain::ports::{
 use crate::domain::settings::Settings;
 use crate::domain::types::make_fan_pct;
 use crate::entry::common::{CliError, write_stdout_line};
-use crate::json::Json;
+use serde_json::{Value, json};
 
 /// Interruptible sleep seam; returns `true` when the stop flag was set.
 pub trait Sleeper: Send + Sync {
@@ -65,18 +65,18 @@ fn log_fatal(log: &LoggingSink, error_name: &str, detail: &str) {
     log.record(
         "fatal",
         "ERROR",
-        vec![
-            ("error".to_owned(), Json::from(error_name)),
-            ("detail".to_owned(), Json::from(detail)),
-            ("traceback".to_owned(), Json::from(backtrace.as_str())),
+        &[
+            ("error", json!(error_name)),
+            ("detail", json!(detail)),
+            ("traceback", json!(backtrace)),
         ],
     );
     // The original lets the exception traceback reach stderr after logging.
     let _ = writeln!(std::io::stderr(), "{backtrace}");
 }
 
-fn print_json(value: &Json) -> Result<(), CliError> {
-    write_stdout_line(&value.to_python_string())
+fn print_json(value: &Value) -> Result<(), CliError> {
+    write_stdout_line(&value.to_string())
 }
 
 /// Sinks constructed for one runtime session.
@@ -167,22 +167,16 @@ fn run_with(
     let mut sinks: Vec<Arc<dyn EventSink>> = vec![log.clone()];
     sinks.extend(additional);
 
-    let selected_port = metrics_port.map(i64::from).or(settings.metrics_port());
+    let selected_port = metrics_port.or(settings.metrics_port());
     let mut server: Option<MetricsServer> = None;
     if let Some(port) = selected_port {
         let state = Arc::new(MetricsState::new());
         sinks.push(state.clone());
-        if let Ok(port) = u16::try_from(port) {
-            match start_metrics_server(port, state) {
-                Ok(started) => server = Some(started),
-                Err(_) => log.warn(&format!(
-                    "metrics server could not bind 127.0.0.1:{port}; continuing without metrics"
-                )),
-            }
-        } else {
-            log.warn(&format!(
+        match start_metrics_server(port, state) {
+            Ok(started) => server = Some(started),
+            Err(_) => log.warn(&format!(
                 "metrics server could not bind 127.0.0.1:{port}; continuing without metrics"
-            ));
+            )),
         }
     }
 
@@ -287,10 +281,7 @@ pub fn set_command(pct: i64, config: &Path) -> Result<(), CliError> {
         .disable_auto()
         .and_then(|()| client.set_manual_pct(pct_valid))
         .map_err(|error| CliError::runtime(error.to_string()))?;
-    print_json(&Json::Object(vec![
-        ("event".to_owned(), Json::from("speed_change")),
-        ("fan_pct".to_owned(), Json::from(pct)),
-    ]))
+    print_json(&json!({"event": "speed_change", "fan_pct": pct}))
 }
 
 /// Hand fan control back to the iDRAC.
@@ -303,10 +294,7 @@ pub fn auto_command(config: &Path) -> Result<(), CliError> {
     client
         .enable_auto()
         .map_err(|error| CliError::runtime(error.to_string()))?;
-    print_json(&Json::Object(vec![
-        ("event".to_owned(), Json::from("mode_change")),
-        ("to".to_owned(), Json::from("auto")),
-    ]))
+    print_json(&json!({"event": "mode_change", "to": "auto"}))
 }
 
 /// One-shot sensor status.
@@ -338,20 +326,11 @@ pub fn status_command(config: &Path, verbose: bool) -> Result<(), CliError> {
         }
         write_stdout_line(&text)?;
     } else {
-        print_json(&Json::Object(vec![
-            ("temp_c".to_owned(), Json::from(temp.0)),
-            (
-                "fan_rpms".to_owned(),
-                Json::Array(
-                    rpms.iter()
-                        .map(|(name, rpm)| {
-                            Json::Array(vec![Json::from(name.as_str()), Json::from(*rpm)])
-                        })
-                        .collect(),
-                ),
-            ),
-            ("target_pct".to_owned(), Json::from(target)),
-        ]))?;
+        print_json(&json!({
+            "temp_c": temp.0,
+            "fan_rpms": rpms,
+            "target_pct": target,
+        }))?;
     }
     Ok(())
 }
@@ -367,63 +346,39 @@ pub fn validate_command(path: &Path, probe: bool) -> Result<(), CliError> {
         Ok(settings) => settings,
         Err(error) => {
             let message = error.to_string();
-            print_json(&Json::Object(vec![
-                ("valid".to_owned(), Json::from(false)),
-                ("error".to_owned(), Json::from(message.as_str())),
-            ]))?;
+            print_json(&json!({"valid": false, "error": message}))?;
             return Err(CliError::usage(message));
         }
     };
-    let mut summary = vec![
-        ("valid".to_owned(), Json::from(true)),
-        (
-            "path".to_owned(),
-            Json::from(path.to_string_lossy().into_owned()),
-        ),
-        ("host".to_owned(), Json::from(settings.host())),
-        (
-            "poll_interval_s".to_owned(),
-            Json::from(settings.poll_interval_s()),
-        ),
-        (
-            "curve_points".to_owned(),
-            Json::from(i64::try_from(settings.curve().len()).unwrap_or(0)),
-        ),
-        (
-            "metrics_port".to_owned(),
-            Json::from(settings.metrics_port()),
-        ),
-    ];
+    let mut summary = json!({
+        "valid": true,
+        "path": path.to_string_lossy(),
+        "host": settings.host(),
+        "poll_interval_s": settings.poll_interval_s(),
+        "curve_points": settings.curve().len(),
+        "metrics_port": settings.metrics_port(),
+    });
     if probe {
         let client = IpmiClient::new(settings.clone());
         let temp = match client.read_max_cpu_temp() {
             Ok(temp) => temp,
             Err(error) => {
                 let message = error.to_string();
-                summary.push((
-                    "probe".to_owned(),
-                    Json::Object(vec![
-                        ("ok".to_owned(), Json::from(false)),
-                        ("error".to_owned(), Json::from(message.as_str())),
-                    ]),
-                ));
-                print_json(&Json::Object(summary))?;
+                summary["probe"] = json!({"ok": false, "error": message});
+                print_json(&summary)?;
                 return Err(CliError::runtime(message));
             }
         };
         let target = interpolate(settings.curve().points(), temp)
             .map_err(|error| CliError::runtime(error.to_string()))?;
-        summary.push((
-            "probe".to_owned(),
-            Json::Object(vec![
-                ("ok".to_owned(), Json::from(true)),
-                ("temp_c".to_owned(), Json::from(temp.0)),
-                ("target_pct".to_owned(), Json::from(target)),
-                ("would_auto".to_owned(), Json::from(target.is_none())),
-            ]),
-        ));
+        summary["probe"] = json!({
+            "ok": true,
+            "temp_c": temp.0,
+            "target_pct": target,
+            "would_auto": target.is_none(),
+        });
     }
-    print_json(&Json::Object(summary))
+    print_json(&summary)
 }
 
 #[cfg(test)]
@@ -780,9 +735,9 @@ fan_pct = 20
         assert_eq!(error.code(), 1);
         assert_eq!(h.recorder.names(), ["startup", "shutdown"]);
         let log = h.log.text();
-        assert!(log.contains(r#""event": "fatal""#), "{log}");
+        assert!(log.contains(r#""event":"fatal""#), "{log}");
         assert!(log.contains("policy exploded"), "{log}");
-        assert!(log.contains(r#""level": "ERROR""#), "{log}");
+        assert!(log.contains(r#""level":"ERROR""#), "{log}");
     }
 
     #[test]
@@ -817,8 +772,26 @@ fan_pct = 20
 
         let log = h.log.text();
         assert!(log.contains("could not bind"), "{log}");
-        assert!(log.contains(r#""level": "WARNING""#), "{log}");
+        assert!(log.contains(r#""level":"WARNING""#), "{log}");
         assert_eq!(h.recorder.names(), ["startup", "shutdown"]);
+    }
+
+    #[test]
+    fn out_of_range_config_metrics_port_is_a_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config(
+            dir.path(),
+            &CONFIG.replace(
+                "poll_interval_s = 1",
+                "poll_interval_s = 1\nmetrics_port = 70000",
+            ),
+        );
+        let h = harness(&[50], vec![SleepStep::Stop], Arc::new(CurvePolicy));
+
+        let error = run(&h, &config).unwrap_err();
+
+        assert_eq!(error.code(), 2);
+        assert!(h.recorder.names().is_empty());
     }
 
     #[test]

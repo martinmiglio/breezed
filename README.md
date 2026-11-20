@@ -138,12 +138,14 @@ curve points, so choose them carefully. If anything looks wrong,
 
 ## Rust rewrite
 
-A parity-focused Rust rewrite lives in [`rust/`](rust/README.md), with the
-behaviour contract and intentional differences documented in
-[`rust/PARITY.md`](rust/PARITY.md). It mirrors the same layered architecture and
-CLI/JSON/IPMI surface, and is fully testable against a fake `ipmitool` without
-hardware. The Python package remains the reference implementation; the Rust
-port has passed a live iDRAC and systemd-install round on the reference host.
+A Rust port lives in [`rust/`](rust/README.md), with the compatibility contract
+and intentional differences documented in [`rust/PARITY.md`](rust/PARITY.md).
+It mirrors the same layered architecture and preserves the CLI surface, JSON
+field names and shapes, IPMI behaviour, metric names, and config keys while using
+native Rust serialization and validation. It is fully testable against a fake
+`ipmitool` without hardware. The Python package remains the reference
+implementation; the Rust port has passed a live iDRAC and systemd-install round
+on the reference host.
 
 ## License
 

@@ -4,8 +4,8 @@ use crate::domain::types::{EventType, FanPercent, OperatingMode, Operation, Reas
 
 /// One observable control-loop event.
 ///
-/// Variants own their payloads and encode field order, so every sink renders
-/// the same JSON regardless of how it consumes the event.
+/// Variants own their payloads, so every sink renders the same JSON fields
+/// regardless of how it consumes the event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The control loop started.
