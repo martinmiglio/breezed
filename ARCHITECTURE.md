@@ -1,96 +1,87 @@
 # Architecture
 
-breezed uses a strict 4-layer **onion / hexagonal (ports & adapters)** design.
+`breezed` uses a strict 4-layer **onion / hexagonal (ports & adapters)** design.
 Dependencies point **inward only**: outer layers know about inner layers; inner
-layers know nothing about outer ones. This document is the source of truth for
-that contract. It is advisory — enforced in code review, not by tooling.
+layers know nothing about outer ones. `tests/architecture.rs` enforces the
+dependency direction mechanically.
 
 ## Layers
 
 | Layer | Modules | Responsibility | Touches I/O? |
 | --- | --- | --- | --- |
-| **Domain** (innermost) | `domain/types`, `domain/ports`, `domain/curve`, `domain/settings` | Vocabulary & business rules: `FanPercent`/`TempC` types, `OperatingMode`/`EventType` enums, the port **Protocols**, curve interpolation, validated `Settings`. | No |
+| **Domain** (innermost) | `domain/types`, `domain/ports`, `domain/curve`, `domain/settings`, `domain/events` | Vocabulary and business rules: `TempC`/`FanPercent`/`Curve`, operating mode and event enums, capability traits, validated `Settings`. | No |
 | **Application** | `application/controller` | The control-loop use case: read → decide → command → emit. | Only via injected ports |
-| **Adapters** | `adapters/ipmi`, `adapters/config`, `adapters/watcher`, `adapters/logs`, `adapters/metrics` | Concrete I/O: `ipmitool` subprocess, TOML+env loading, mtime hot-reload, JSON logging, Prometheus socket. | Yes |
-| **Entry** (composition root) | `entry/runtime`, `entry/daemon`, `entry/daemon_cli`, `entry/common` | CLI parsing, dependency wiring, systemd deployment. | Yes (only here) |
+| **Adapters** | `adapters/ipmi`, `adapters/config`, `adapters/watcher`, `adapters/logs`, `adapters/metrics` | Concrete I/O: `ipmitool` subprocess, TOML plus environment loading, mtime hot-reload, JSON logging, Prometheus socket. | Yes |
+| **Entry** (composition root) | `entry/cli`, `entry/runtime`, `entry/daemon`, `entry/daemon_cli`, `entry/common` | CLI parsing, dependency wiring, control-loop orchestration, systemd deployment, exit-code mapping. | Yes (only here) |
 
-## Core invariant: dependency direction
+## Dependency direction
 
-- `domain` imports **nothing** outside `breezed.domain.*`.
-- `application` imports **only** `breezed.domain.*`.
-- `adapters` import `breezed.domain.*` (and may import sibling adapters — see Adapter conventions).
-- `entry` imports anything; it is the only place that knows concrete classes and wires them together.
+- `domain` imports nothing outside `crate::domain`.
+- `application` imports only `crate::domain`.
+- `adapters` import `crate::domain` and, where useful, sibling adapters.
+- `entry` imports anything; it is the only place that constructs concrete
+  adapters and wires them together.
 
-If you find yourself needing a type from an outer layer inside an inner one,
-that is a signal the type belongs in the domain.
+If an inner layer needs a type from an outer one, that type belongs in the
+domain.
 
-## Ports & adapters
+## Ports and adapters
 
-- All **Protocols** (the app's interface vocabulary) live in `domain/ports.py`:
-  `TempReader`, `FanCommander`, `EventSink`, and `SpeedPolicy`.
-- Adapters conform to ports **structurally** (`runtime_checkable` Protocols); they
-  never inherit them. `IpmiClient` satisfies both `TempReader` and `FanCommander`
-  without naming them; `LoggingEventSink` and `MetricsState` satisfy `EventSink`;
-  the `curve.interpolate` function satisfies the callable `SpeedPolicy` without a
-  wrapper class.
-- The application depends on the abstract port, never on a concrete adapter.
-  Swapping IPMI for a mock or a different transport touches only `entry`, not
-  the core.
+Capability traits live in `domain::ports`:
+
+- `TempReader` / `FanCommander`, combined as `FanDevice`;
+- `EventSink`;
+- `SpeedPolicy`;
+- `Clock`.
+
+Adapters implement these traits structurally and are erased behind
+`Arc<dyn …>` in `entry`. `Controller` depends only on the traits, so the IPMI
+transport, clock, policy, and sinks can be replaced without touching the core.
+Tests inject fakes at these seams; no hardware is required.
 
 ## Application core
 
-`Controller` is the single use case. It is constructed with its collaborators
-injected: `reader: TempReader`, `commander: FanCommander`, `policy: SpeedPolicy`,
-`settings: Settings`, `sinks: Sequence[EventSink]`, and a `clock`. It performs no
-I/O of its own — every observable action goes through an injected port or is
-broadcast to the sinks. The fan target comes from the injected `SpeedPolicy`
-(`curve.interpolate` today, a PID policy later), never from a direct import.
+`Controller` is the single use case. It is constructed with a `FanDevice`, a
+`SpeedPolicy`, validated `Settings`, a slice of `EventSink`s, and a `Clock`. It
+performs no I/O of its own: every observable action goes through an injected
+port or is broadcast to the sinks.
 
-Events fan out: `_emit` broadcasts an `EventType` to every sink (logs + metrics
-today). The core does not know which sinks exist.
+Events fan out through `EventSink`. The core does not know whether a sink logs,
+updates metrics, or records events for a test.
 
 ## Cross-cutting rules
 
-1. **Error hierarchy.** `DomainError` (a `ValueError` subclass) in
-   `domain/types.py` is the shared base for all expected failures. Layer-specific
-   subclasses: `IpmiError` (transport failures, raised by the ipmi adapter),
-   `ConfigError` (adapters/config), `DaemonError` (entry/daemon). Adapters wrap
-   low-level errors (`OSError`, `subprocess`, TOML, pydantic `ValidationError`)
-   into the typed error. Never let a raw `ValueError`/`Exception` escape an outer
-   boundary as if it were domain data.
-2. **Exit-code contract.** Owned by `entry` only: `0` ok, `1` runtime error
-   (IPMI failure), `2` usage/config error. Only `entry` translates exceptions
-   into exit codes via `_fail`; no inner layer calls `sys.exit`.
-3. **Event vocabulary.** `EventType` (in `domain/types.py`) is the single,
-   closed source of event names. To add an event: add the member to `EventType`
-   first, then make every `EventSink` handle (or explicitly ignore) it. Emit
-   sites pass the enum; sinks never invent names.
-4. **Secrets discipline.** The iDRAC password is passed to ipmitool through the
-   child process environment (`IPMI_PASSWORD` / `-E`), never on argv, so it does
-   not appear in `ps` or traceback command lines. It is never stored, logged, or
-   echoed; `Settings.password` is a `SecretStr`. Error messages reference
-   subcommand args, never the full argv, and redact on stderr. Config never holds
-   secrets — `IDRAC_*` come from the environment and win over the file.
-5. **Single composition root.** Only `entry/` builds and injects dependencies
-   (`AppDeps` in `entry/runtime.py`). Inner layers accept ports/values through
-   constructors; they never import a concrete collaborator to self-wire.
+1. **Errors are values.** `DomainError` is the shared base for expected
+   failures. Adapters wrap low-level failures into `IpmiError` or
+   `ConfigError`; `entry` maps them to the exit-code contract. Inner layers
+   return `Result`, never call `process::exit`.
+2. **Exit-code contract.** Owned by `entry` only: `0` ok, `1` runtime/IPMI
+   error, `2` usage/config error.
+3. **Event vocabulary.** `domain::events::Event` and `EventType` are the closed
+   source of event names. Add the variant and the enum member together, then
+   handle it in every sink.
+4. **Secrets discipline.** The iDRAC password reaches `ipmitool` through the
+   child environment (`IPMI_PASSWORD` / `-E`), never argv. `SecretString` masks
+   it in `Debug`/`Display`. Errors name fields and subcommand arguments, never
+   the full argv or secret values. Config never holds secrets: `IDRAC_*`
+   environment variables win over the file.
+5. **Single composition root.** Only `entry/` builds concrete collaborators.
+   `RuntimeDeps` exists so the control loop can be driven with fakes in tests.
 
 ## Adapter conventions
 
-- Implement a domain/application Protocol **structurally**; do not subclass it.
-- Hold **zero business rules** — all validation lives in the domain
-  (`make_fan_pct`, `validate_curve`, pydantic validators). Adapters parse shape
-  and wrap errors.
-- Wrap low-level failures into the layer's typed `DomainError` subclass with
-  **field-name-only** messages (never secret values).
-- **Adapter → adapter imports are allowed**, as long as every participant still
-  depends only inward (example: `watcher` → `config`). Prefer passing results
-  across the `entry` boundary when practical, but do not contort code to avoid a
-  sibling import.
+- Implement the relevant `domain::ports` trait; do not add a parallel
+  abstraction.
+- Hold zero business rules — validation lives in `domain`.
+- Wrap low-level failures into the layer's typed error with field-name-only
+  messages.
+- Sibling adapter imports are allowed as long as every participant still
+  depends only inward (for example, `watcher` uses `config`).
 
 ## Testing
 
-Tests mirror the source layering (`tests/domain`, `tests/application`,
-`tests/adapters`, `tests/entry`). Unit tests for domain/application must not
-touch real I/O — inject fakes for ports (`clock`, `reader`/`commander`,
-`FileOps`, `CommandRunner`). This mirroring is the proof the boundaries hold.
+Unit tests live beside the code. End-to-end tests in `tests/` drive the real
+binary against a shell-script fake `ipmitool`, fake `sudo`, and fake
+`systemctl`. Domain and application tests inject fakes for every port and never
+touch real I/O. `tests/architecture.rs` asserts the layer direction and the
+`unsafe` prohibition.

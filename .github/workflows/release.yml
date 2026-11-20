@@ -12,17 +12,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust -> target
 
       - name: Verify the tag matches the Cargo version
         run: |
@@ -54,8 +49,8 @@ jobs:
           cp resources/breezed.service.template "dist/${name}/breezed.service"
           cp resources/breezed.toml.example "dist/${name}/breezed.toml.example"
           cp README.md "dist/${name}/README.md"
-          cp PARITY.md "dist/${name}/PARITY.md"
-          cp ../LICENSE "dist/${name}/LICENSE"
+          cp MIGRATION.md "dist/${name}/MIGRATION.md"
+          cp LICENSE "dist/${name}/LICENSE"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS)
 
@@ -63,8 +58,8 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: |
-            ${{ github.workspace }}/rust/dist/*.tar.gz
-            ${{ github.workspace }}/rust/dist/SHA256SUMS
+            ${{ github.workspace }}/dist/*.tar.gz
+            ${{ github.workspace }}/dist/SHA256SUMS
 
       - name: Publish GitHub release
         env:

@@ -1,54 +1,62 @@
-# AGENTS.md
+# AGENTS.md — breezed
 
-You are working in **breezed**, a 4-layer onion/hexagonal Python project
-(domain → application → adapters → entry). Full context lives in
-`ARCHITECTURE.md` — read it first. This file is the short, agent-friendly
-version: the rules, plus recipes for the three common tasks.
+`breezed` is a Rust fan controller for Dell PowerEdge servers over
+iDRAC/IPMI. The architecture is onion/hexagonal, with a strict dependency
+direction documented in `ARCHITECTURE.md` and enforced by
+`tests/architecture.rs`.
 
 ## Hard rules
 
-**DO**
-- Keep dependencies pointing inward: `domain` ← `application` ← `adapters` ← `entry`.
-- Put new business types, enums, and Protocols in `domain/`.
-- Inject collaborators via constructors; only `entry/` wires concrete classes.
-- Wrap adapter / low-level errors into `DomainError` subclasses with field-name-only messages.
-- Add new events to `EventType` (in `domain/types.py`) first, then handle in every sink.
-- Conform to Protocols structurally (the adapter "is-a" port without subclassing).
+- Dependencies point inward: `domain` ← `application` ← `adapters` ← `entry`.
+- Domain has no I/O and no imports from outer layers; application only uses
+  `domain` and injected ports; adapters never import `entry`.
+- Inject collaborators through constructors/traits. Only `entry/` wires concrete
+  types together.
+- Business rules live in `domain/`; adapters parse shape and wrap errors.
+- Events are the typed `domain::events::Event` enum. Add a variant and its
+  `EventType` member together, then handle it in `adapters::logs` and
+  `adapters::metrics`.
+- Never put a secret on argv or in a log/error string. `SecretString` masks it;
+  `ipmitool` receives it via `IPMI_PASSWORD`.
+- No `unsafe` (forbidden in `Cargo.toml` and checked by a test).
+- No `println!`/I/O in `domain` or `application`.
 
-**DON'T**
-- Import an outer layer from an inner one (no `domain` → `adapters`, no `application` → `entry`).
-- Put business rules or validation in adapters — that belongs in the domain.
-- Call `sys.exit` outside `entry/`; let secrets reach logs or error text.
-- Subclass a Protocol to implement it.
-- Store secrets in config; they come from the environment and win over the file.
+## Commands
 
-## Boundary quick-ref
+```sh
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+```
 
-| Layer | May import | May do I/O |
-| --- | --- | --- |
-| domain | only `domain` | no |
-| application | only `domain` | only via injected ports |
-| adapters | `domain` + sibling adapters | yes |
-| entry | anything (composition root) | yes |
+`just ci` runs the same sequence.
 
 ## Recipes
 
 ### Add a CLI command
-In `entry/runtime.py` (runtime cmds) or `entry/daemon_cli.py` (daemon cmds):
-1. Decorate with `@app.command()`; load settings via `_load_settings_or_fail(config)`.
-2. Build the client via `deps.build_client(settings)`; guard IPMI calls and, on
-   `IpmiError`, call `_fail(err, code=1)`.
-3. On config / usage errors call `_fail(err, code=2)`.
-4. Print machine output as JSON to **stdout**; send errors / human text to **stderr**.
+
+1. Add a `Command` variant and an `Args` struct in `entry/cli.rs`.
+2. Implement the handler in `entry/runtime.rs` or `entry/daemon_cli.rs`.
+   Daemon deploy steps are data-driven (`InstallAction`/`RemoveAction`) in
+   `entry/daemon.rs`; add a variant there rather than a closure.
+3. Return `CliError::usage(...)` for config/usage failures (`2`) and
+   `CliError::runtime(...)` for IPMI/runtime failures (`1`).
+4. Print machine output to stdout with `serde_json`; errors go to stderr.
 
 ### Add an adapter
-1. New module in `adapters/`. Define a class/function that structurally satisfies
-   a `domain/ports` Protocol.
-2. Keep all validation in the domain; wrap I/O errors into the typed
-   `DomainError` subclass (field-name-only messages, no secrets).
-3. Wire the concrete into `entry/` (composition root) — never self-wire inside the adapter.
+
+1. Define a type in `adapters/` that implements the relevant `domain::ports`
+   trait.
+2. Keep validation in `domain`; wrap low-level failures in the adapter error
+   type (field-name-only messages).
+3. Wire it in `entry/`. `daemon install` copies the running binary; the
+   privileged `apply` validates the config owner against `SUDO_USER` and
+   resolves its primary group.
 
 ### Add an event
-1. Add the member to `EventType` in `domain/types.py`.
-2. Emit it from `Controller` via `self._emit(EventType.X, **fields)`.
-3. Ensure every `EventSink` (`LoggingEventSink`, `MetricsState`) handles or ignores it.
+
+1. Add a variant to `domain::events::Event` and an `EventType` member.
+2. Emit it from `application::controller` (take `&Event` in `emit`).
+3. Handle or ignore it in `adapters::logs` and `adapters::metrics`; add the
+   field names to the event-schema tests.
