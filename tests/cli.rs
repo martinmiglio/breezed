@@ -352,8 +352,7 @@ fn run_serves_metrics_and_shuts_down_gracefully() {
         .spawn()
         .expect("spawn run");
 
-    sleep(Duration::from_millis(1300));
-    let response = http_get(port, "/metrics");
+    let response = wait_for_metrics(port);
     assert!(response.starts_with("HTTP/1.0 200 OK"), "{response}");
     let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
     assert!(
@@ -382,17 +381,23 @@ fn free_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
-fn http_get(port: u16, path: &str) -> String {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect metrics");
-    stream
-        .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    response
+fn wait_for_metrics(port: u16) -> String {
+    for _ in 0..200 {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+            stream
+                .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            if response.starts_with("HTTP/1.0 200 OK")
+                && response.contains("breezed_temp_c{sensor=\"cpu_max\"} 50")
+            {
+                return response;
+            }
+        }
+        sleep(Duration::from_millis(50));
+    }
+    panic!("metrics server did not become ready on 127.0.0.1:{port}");
 }
 
 fn terminate(port: u16, child: std::process::Child) -> std::process::Output {

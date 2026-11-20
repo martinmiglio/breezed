@@ -156,12 +156,12 @@ pub fn daemon_apply(owner: &str) -> Result<(), CliError> {
 }
 
 fn validate_sudo_owner(owner: &str, sudo_user: Option<&str>) -> Result<(), CliError> {
-    if let Some(sudo_user) = sudo_user.filter(|user| !user.is_empty()) {
-        if sudo_user != owner {
-            return Err(CliError::runtime(format!(
-                "refusing config owner '{owner}': sudo was invoked by '{sudo_user}'"
-            )));
-        }
+    if let Some(sudo_user) = sudo_user.filter(|user| !user.is_empty())
+        && sudo_user != owner
+    {
+        return Err(CliError::runtime(format!(
+            "refusing config owner '{owner}': sudo was invoked by '{sudo_user}'"
+        )));
     }
     Ok(())
 }

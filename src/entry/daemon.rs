@@ -768,19 +768,19 @@ pub fn which(name: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     for dir in env::split_paths(&path) {
         let candidate = dir.join(name);
-        if let Ok(metadata) = fs::metadata(&candidate) {
-            if metadata.is_file() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if metadata.permissions().mode() & 0o111 != 0 {
-                        return Some(candidate);
-                    }
-                }
-                #[cfg(not(unix))]
-                {
+        if let Ok(metadata) = fs::metadata(&candidate)
+            && metadata.is_file()
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 != 0 {
                     return Some(candidate);
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                return Some(candidate);
             }
         }
     }

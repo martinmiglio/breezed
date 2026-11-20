@@ -49,6 +49,7 @@ jobs:
           cp resources/breezed.service.template "dist/${name}/breezed.service"
           cp resources/breezed.toml.example "dist/${name}/breezed.toml.example"
           cp README.md "dist/${name}/README.md"
+          cp ARCHITECTURE.md "dist/${name}/ARCHITECTURE.md"
           cp LICENSE "dist/${name}/LICENSE"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS)
