@@ -26,8 +26,16 @@ curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install
 
 The script needs `curl`, `tar`, and `sha256sum`. Set
 `BREEZED_VERIFY_ATTESTATION=1` to also verify GitHub build provenance; that
-requires the `gh` CLI. Downloads go into a private temp directory and are
-checked before anything is installed.
+requires the `gh` CLI. Environment variables must be set on the `bash` side of
+the pipe:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install.sh \
+  | BREEZED_VERIFY_ATTESTATION=1 bash
+```
+
+Downloads go into a private temp directory and are checked before anything is
+installed.
 
 `daemon install` asks for sudo once, copies the binary to
 `/usr/local/bin/breezed`, creates the `breezed` user, writes the systemd unit,
@@ -38,6 +46,9 @@ If you prefer to install from a downloaded tarball:
 
 ```sh
 VERSION=0.3.1
+BASE="https://github.com/martinmiglio/breezed/releases/download/v${VERSION}"
+curl -fsSLO "${BASE}/breezed-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+curl -fsSLO "${BASE}/SHA256SUMS"
 gh attestation verify "breezed-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
   --repo martinmiglio/breezed
 sha256sum -c SHA256SUMS
@@ -74,9 +85,10 @@ only emit JSON with `--json`.
 
 ## Configuration
 
-A commented example is in
-[`resources/breezed.toml.example`](resources/breezed.toml.example). The service
-installs a copy at `/etc/breezed/breezed.toml` on first run.
+A commented example lives at
+[`resources/breezed.toml.example`](resources/breezed.toml.example) in the
+repository, and ships as `breezed.toml.example` in release archives. The
+service installs a copy at `/etc/breezed/breezed.toml` on first run.
 
 Secrets belong in `/etc/breezed.env`, not the config file. `IDRAC_HOST`,
 `IDRAC_USER`, and `IDRAC_PASSWORD` override the file when non-empty. The config

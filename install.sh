@@ -83,6 +83,7 @@ done
 case "$version" in
     *[!0-9A-Za-z.+-]*) die "invalid version: $version" ;;
 esac
+version="${version#v}"
 
 for tool in curl tar sha256sum awk sed mktemp; do
     command -v "$tool" >/dev/null 2>&1 || die "required command not found: $tool"

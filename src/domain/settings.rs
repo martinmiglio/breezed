@@ -225,10 +225,10 @@ fn parse_positive(name: &str, raw: Option<i64>, errors: &mut Vec<DomainError>) -
 
 fn parse_port(raw: Option<i64>, errors: &mut Vec<DomainError>) -> Option<u16> {
     let value = raw?;
-    if let Ok(port) = u16::try_from(value) {
-        if port > 0 {
-            return Some(port);
-        }
+    if let Ok(port) = u16::try_from(value)
+        && port > 0
+    {
+        return Some(port);
     }
     errors.push(DomainError::new(format!(
         "metrics_port must be in 1..=65535, got {value}"
