@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 description = "Curve-based fan controller for Dell PowerEdge servers via iDRAC/IPMI"
 license = "MIT"
+publish = false
 repository = "https://github.com/martinmiglio/breezed"
 readme = "README.md"
 

@@ -123,6 +123,21 @@ cargo test --all-features
 `systemctl` binaries, so no hardware is needed. The architecture is described in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+## Releasing
+
+Versions are bumped with [`cargo-release`](https://github.com/crate-ci/cargo-release),
+which keeps `Cargo.toml`, `Cargo.lock`, and the git tag in sync:
+
+```sh
+cargo install cargo-release --locked
+cargo release patch        # dry run
+just release patch         # commit, tag vX.Y.Z, and push
+```
+
+The tag triggers the release workflow: it reruns the checks, builds the
+`x86_64-unknown-linux-gnu` archive, writes `SHA256SUMS`, attests the archive and
+installer, and publishes the GitHub release.
+
 ## License
 
 [MIT](LICENSE)
