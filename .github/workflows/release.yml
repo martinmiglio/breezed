@@ -49,16 +49,18 @@ jobs:
           cp resources/breezed.service.template "dist/${name}/breezed.service"
           cp resources/breezed.toml.example "dist/${name}/breezed.toml.example"
           cp README.md "dist/${name}/README.md"
-          cp MIGRATION.md "dist/${name}/MIGRATION.md"
           cp LICENSE "dist/${name}/LICENSE"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS)
+          sed "s|^DEFAULT_VERSION=.*|DEFAULT_VERSION=\"${version}\"|" install.sh > dist/install.sh
+          chmod +x dist/install.sh
 
       - name: Attest the release artifacts
         uses: actions/attest@v4
         with:
           subject-path: |
             ${{ github.workspace }}/dist/*.tar.gz
+            ${{ github.workspace }}/dist/install.sh
             ${{ github.workspace }}/dist/SHA256SUMS
 
       - name: Publish GitHub release
@@ -68,6 +70,7 @@ jobs:
           set -euo pipefail
           gh release create "$GITHUB_REF_NAME" \
             dist/*.tar.gz \
+            dist/install.sh \
             dist/SHA256SUMS \
             --verify-tag \
             --generate-notes \
