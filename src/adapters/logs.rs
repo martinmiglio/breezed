@@ -20,7 +20,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Current UTC timestamp in the `2026-01-01T00:00:00Z` shape.
-pub fn utc_timestamp() -> String {
+fn utc_timestamp() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
@@ -29,7 +29,7 @@ fn local_timestamp() -> String {
 }
 
 /// Serialize one event as a JSON line (without the trailing newline).
-pub fn render_json(event: &Event, ts: &str) -> String {
+fn render_json(event: &Event, ts: &str) -> String {
     render_record(
         event.kind().as_str(),
         event.level(),
@@ -39,7 +39,7 @@ pub fn render_json(event: &Event, ts: &str) -> String {
 }
 
 /// Serialize an arbitrary record with the same envelope as event lines.
-pub fn render_record(event_name: &str, level: &str, fields: &[(&str, Value)], ts: &str) -> String {
+fn render_record(event_name: &str, level: &str, fields: &[(&str, Value)], ts: &str) -> String {
     let mut object = serde_json::Map::with_capacity(fields.len() + 4);
     object.insert("event".to_owned(), json!(event_name));
     for (key, value) in fields {
@@ -51,9 +51,9 @@ pub fn render_record(event_name: &str, level: &str, fields: &[(&str, Value)], ts
     Value::Object(object).to_string()
 }
 
-/// Render one event in the human-readable `--verbose` shape.
-pub fn render_human(event: &Event, ts: &str) -> String {
-    format!("[{ts}] {:<8} {}", event.level(), event.kind())
+/// Render one record in the human-readable `--verbose` shape.
+fn render_human(event_name: &str, level: &str, ts: &str) -> String {
+    format!("[{ts}] {level:<8} {event_name}")
 }
 
 fn event_fields(event: &Event) -> Vec<(&'static str, Value)> {
@@ -155,7 +155,7 @@ impl LoggingSink {
     /// Emit a non-vocabulary diagnostic record (fatal errors, warnings).
     pub fn record(&self, event_name: &str, level: &str, fields: &[(&str, Value)]) {
         let line = if self.verbose {
-            format!("[{ts}] {level:<8} {event_name}", ts = local_timestamp())
+            render_human(event_name, level, &local_timestamp())
         } else {
             render_record(event_name, level, fields, &utc_timestamp())
         };
@@ -172,7 +172,7 @@ impl LoggingSink {
 impl EventSink for LoggingSink {
     fn emit(&self, event: &Event) {
         let line = if self.verbose {
-            render_human(event, &local_timestamp())
+            render_human(event.kind().as_str(), event.level(), &local_timestamp())
         } else {
             render_json(event, &utc_timestamp())
         };
@@ -185,9 +185,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::domain::events::Event;
-    use crate::domain::ports::EventSink;
-    use crate::domain::types::FanPercent;
     use crate::domain::types::{EventType, OperatingMode, Operation, Reason, TempC};
 
     #[derive(Clone, Default)]

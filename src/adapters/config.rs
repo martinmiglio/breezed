@@ -27,11 +27,6 @@ impl ConfigError {
             message: message.into(),
         }
     }
-
-    /// The message text.
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// Environment lookup seam, injectable so tests never mutate process globals.
@@ -50,11 +45,14 @@ impl Environment for SystemEnvironment {
     }
 }
 
-const ENV_OVERRIDES: [(&str, &str); 3] = [
-    ("host", "IDRAC_HOST"),
-    ("user", "IDRAC_USER"),
-    ("password", "IDRAC_PASSWORD"),
-];
+const ENV_HOST: &str = "IDRAC_HOST";
+const ENV_USER: &str = "IDRAC_USER";
+const ENV_PASSWORD: &str = "IDRAC_PASSWORD";
+
+/// Read one override; an empty env value counts as unset, same as absent.
+fn env_override(env: &dyn Environment, key: &str) -> Option<String> {
+    env.var(key).filter(|value| !value.is_empty())
+}
 
 /// Load and validate settings from `path`.
 ///
@@ -106,17 +104,9 @@ pub fn load_settings_with(
         ipmitool_path: string_field(&settings_table, "ipmitool_path")?,
     };
 
-    for (name, env_key) in ENV_OVERRIDES {
-        // An empty env value counts as unset, same as absent.
-        if let Some(value) = env.var(env_key).filter(|value| !value.is_empty()) {
-            match name {
-                "host" => input.host = Some(value),
-                "user" => input.user = Some(value),
-                "password" => input.password = Some(value),
-                _ => {}
-            }
-        }
-    }
+    input.host = env_override(env, ENV_HOST).or(input.host);
+    input.user = env_override(env, ENV_USER).or(input.user);
+    input.password = env_override(env, ENV_PASSWORD).or(input.password);
 
     Settings::from_input(input).map_err(|errors| {
         ConfigError::new(
@@ -217,7 +207,6 @@ fn row_int(table: &Table, index: usize, key: &str) -> Result<i64, ConfigError> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::io::Write;
     use std::path::PathBuf;
 
     use super::*;
@@ -247,8 +236,7 @@ mod tests {
 
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        let mut file = fs::File::create(&path).unwrap();
-        file.write_all(body.as_bytes()).unwrap();
+        fs::write(&path, body).unwrap();
         path
     }
 

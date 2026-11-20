@@ -9,22 +9,17 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
-use common::{PASSWORD, World, event_names, json_lines};
-
-fn stdout(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
+use common::{PASSWORD, World, event_names, json_lines, stderr, stdout};
 
 #[test]
 fn version_prints_the_crate_version() {
     let world = World::new(&["46"]);
     let output = world.run(&["--version"]);
     assert!(output.status.success());
-    assert_eq!(stdout(&output), "breezed 0.3.1\n");
+    assert_eq!(
+        stdout(&output),
+        format!("breezed {}\n", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]

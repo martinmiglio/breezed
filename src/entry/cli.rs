@@ -12,8 +12,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::entry::common::CliError;
 use crate::entry::daemon_cli::{
-    ApplyOptions, InstallOptions, daemon_apply, daemon_install, daemon_remove,
-    daemon_status_command, daemon_uninstall,
+    daemon_apply, daemon_install, daemon_remove, daemon_status_command, daemon_uninstall,
 };
 use crate::entry::runtime::{
     auto_command, run_command, set_command, status_command, validate_command,
@@ -188,11 +187,8 @@ pub fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Status(args) => status_command(&args.config, args.verbose),
         Command::Validate(args) => validate_command(&args.path, args.probe),
         Command::Daemon { command } => match command {
-            DaemonCommand::Install(args) => daemon_install(&InstallOptions {
-                dry_run: args.dry_run,
-                json: args.json,
-            }),
-            DaemonCommand::Apply(args) => daemon_apply(&ApplyOptions { owner: args.owner }),
+            DaemonCommand::Install(args) => daemon_install(args.dry_run, args.json),
+            DaemonCommand::Apply(args) => daemon_apply(&args.owner),
             DaemonCommand::Status => daemon_status_command(),
             DaemonCommand::Uninstall(args) => daemon_uninstall(args.dry_run, args.json),
             DaemonCommand::Remove => daemon_remove(),

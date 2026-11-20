@@ -49,7 +49,7 @@ impl Curve {
 /// # Errors
 ///
 /// Returns [`DomainError`] describing the first violation.
-pub fn validate_curve(points: &[CurvePoint]) -> Result<(), DomainError> {
+fn validate_curve(points: &[CurvePoint]) -> Result<(), DomainError> {
     if points.is_empty() {
         return Err(DomainError::new("curve must contain at least one point"));
     }
@@ -72,7 +72,7 @@ pub fn validate_curve(points: &[CurvePoint]) -> Result<(), DomainError> {
 ///
 /// At or above the top point returns `Ok(None)` (the AUTO signal); below the
 /// first point clamps to the first fan percentage. Otherwise linear
-/// interpolation, rounded with ties-to-even (Python's `round`).
+/// interpolation, rounded with ties-to-even.
 ///
 /// # Errors
 ///
@@ -156,10 +156,10 @@ mod tests {
     #[test]
     fn half_step_rounds_to_even() {
         let validated = Curve::new(curve(&[(0, 7), (10, 8)])).unwrap();
-        // Python's round(7.5) == 8.
+        // 7.5 rounds to the even neighbour, 8.
         assert_eq!(interpolate(validated.points(), TempC(5)), Ok(Some(8)));
         let even_down = Curve::new(curve(&[(0, 8), (10, 9)])).unwrap();
-        // Python's round(8.5) == 8.
+        // 8.5 rounds to the even neighbour, 8.
         assert_eq!(interpolate(even_down.points(), TempC(5)), Ok(Some(8)));
     }
 

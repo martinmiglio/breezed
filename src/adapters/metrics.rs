@@ -34,7 +34,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MetricsInner {
     temp_c: Option<TempC>,
     fan_percent: Option<FanPercent>,
@@ -44,29 +44,15 @@ struct MetricsInner {
 }
 
 /// Shared, thread-safe metrics state; update-all and snapshot-all are atomic.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MetricsState {
     inner: Mutex<MetricsInner>,
-}
-
-impl Default for MetricsState {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl MetricsState {
     /// Create an empty state (mode `unknown`, counters zero).
     pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(MetricsInner {
-                temp_c: None,
-                fan_percent: None,
-                mode: OperatingMode::Unknown,
-                ipmi_errors_total: 0,
-                polls_total: 0,
-            }),
-        }
+        Self::default()
     }
 
     /// Record one successful poll atomically.
@@ -84,7 +70,8 @@ impl MetricsState {
     }
 
     /// Last observed temperature and mode, for diagnostics.
-    pub fn last_poll(&self) -> Option<(TempC, Option<FanPercent>, OperatingMode)> {
+    #[cfg(test)]
+    fn last_poll(&self) -> Option<(TempC, Option<FanPercent>, OperatingMode)> {
         let inner = lock(&self.inner);
         inner
             .temp_c
@@ -92,7 +79,8 @@ impl MetricsState {
     }
 
     /// Total counters as `(polls, ipmi_errors)`.
-    pub fn counters(&self) -> (u64, u64) {
+    #[cfg(test)]
+    fn counters(&self) -> (u64, u64) {
         let inner = lock(&self.inner);
         (inner.polls_total, inner.ipmi_errors_total)
     }
@@ -228,8 +216,6 @@ mod tests {
     use std::net::TcpListener;
 
     use super::*;
-    use crate::domain::events::Event;
-    use crate::domain::ports::EventSink;
 
     const EXPECTED_METADATA: &str = "\
 # HELP breezed_temp_c Current maximum CPU temperature in degrees Celsius.
@@ -246,13 +232,7 @@ mod tests {
 
     fn populated_state() -> MetricsState {
         let state = MetricsState::new();
-        state.record_poll(
-            TempC(63),
-            Some(FanPercent::from_validated(12)),
-            OperatingMode::Manual,
-        );
-        // Exercise a non-zero poll count.
-        for _ in 0..41 {
+        for _ in 0..42 {
             state.record_poll(
                 TempC(63),
                 Some(FanPercent::from_validated(12)),
@@ -263,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn render_exact_documented_lines_from_populated_state() {
+    fn render_exact_documented_lines() {
         let state = MetricsState::new();
         state.record_poll(
             TempC(63),
@@ -377,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn start_metrics_server_returns_none_on_bind_failure() {
+    fn start_metrics_server_errors_on_bind_failure() {
         let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
         assert!(start_metrics_server(port, Arc::new(MetricsState::new())).is_err());

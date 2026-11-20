@@ -15,7 +15,7 @@ pub mod test_support {
     use crate::domain::types::{FanPercent, TempC};
 
     /// Build one curve point.
-    pub fn point(temp_c: i32, fan_pct: i32) -> CurvePoint {
+    fn point(temp_c: i32, fan_pct: i32) -> CurvePoint {
         CurvePoint {
             temp_c: TempC(temp_c),
             fan_pct: FanPercent::from_validated(fan_pct),
@@ -32,13 +32,8 @@ pub mod test_support {
         super::settings::default_curve()
     }
 
-    /// Valid settings carrying `curve` and otherwise-default fields.
-    pub fn settings_with_curve(curve: Curve) -> Settings {
-        Settings::for_tests(curve)
-    }
-
     /// Valid settings with the shipped default curve.
     pub fn settings() -> Settings {
-        settings_with_curve(default_curve())
+        Settings::for_tests(default_curve())
     }
 }

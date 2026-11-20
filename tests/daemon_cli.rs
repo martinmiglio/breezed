@@ -4,7 +4,7 @@ mod common;
 
 use std::fs;
 
-use common::{World, json_lines};
+use common::{World, json_lines, stderr, stdout};
 
 const FAKE_SUDO: &str = r#"#!/bin/sh
 printf '%s\n' "$@" > "$SUDO_LOG"
@@ -30,53 +30,25 @@ fn is_root() -> bool {
     })
 }
 
-struct FakeBin {
-    dir: std::path::PathBuf,
-}
-
-impl FakeBin {
-    fn new(world: &World) -> Self {
-        let dir = world.path().join("bin");
-        fs::create_dir_all(&dir).unwrap();
-        let bin = Self { dir };
-        bin.write("sudo", FAKE_SUDO);
-        bin.write("systemctl", FAKE_SYSTEMCTL);
-        bin
-    }
-
-    fn write(&self, name: &str, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        let path = self.dir.join(name);
-        fs::write(&path, body).unwrap();
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).unwrap();
-    }
-
-    fn path_value(&self) -> String {
-        format!(
-            "{}:{}",
-            self.dir.display(),
-            std::env::var("PATH").unwrap_or_default()
-        )
-    }
-}
-
-fn stdout(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+/// Install fake `sudo` and `systemctl` into the world and return a `PATH`.
+fn fake_bin(world: &World) -> String {
+    fs::create_dir_all(world.file("bin")).unwrap();
+    world.write_executable("bin/sudo", FAKE_SUDO);
+    world.write_executable("bin/systemctl", FAKE_SYSTEMCTL);
+    format!(
+        "{}:{}",
+        world.file("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }
 
 #[test]
 fn install_dry_run_prints_the_binary_install_plan() {
     let world = World::new(&["46"]);
-    let bin = FakeBin::new(&world);
+    let path = fake_bin(&world);
     let output = world
         .command()
-        .env("PATH", bin.path_value())
+        .env("PATH", &path)
         .args(["daemon", "install", "--dry-run", "--json"])
         .output()
         .unwrap();
@@ -108,11 +80,11 @@ fn install_without_privileges_builds_the_fixed_sudo_argv() {
         return;
     }
     let world = World::new(&["46"]);
-    let bin = FakeBin::new(&world);
+    let path = fake_bin(&world);
     let sudo_log = world.path().join("sudo.log");
     let output = world
         .command()
-        .env("PATH", bin.path_value())
+        .env("PATH", &path)
         .env_remove("LOGNAME")
         .env("USER", "test-owner")
         .env("SUDO_LOG", &sudo_log)
@@ -139,11 +111,11 @@ fn uninstall_without_privileges_builds_the_fixed_sudo_argv() {
         return;
     }
     let world = World::new(&["46"]);
-    let bin = FakeBin::new(&world);
+    let path = fake_bin(&world);
     let sudo_log = world.path().join("sudo.log");
     let output = world
         .command()
-        .env("PATH", bin.path_value())
+        .env("PATH", &path)
         .env("SUDO_LOG", &sudo_log)
         .args(["daemon", "uninstall", "--json"])
         .output()
@@ -168,10 +140,10 @@ fn uninstall_without_privileges_builds_the_fixed_sudo_argv() {
 #[test]
 fn uninstall_dry_run_reports_retained_state() {
     let world = World::new(&["46"]);
-    let bin = FakeBin::new(&world);
+    let path = fake_bin(&world);
     let output = world
         .command()
-        .env("PATH", bin.path_value())
+        .env("PATH", &path)
         .args(["daemon", "uninstall", "--dry-run", "--json"])
         .output()
         .unwrap();
@@ -197,10 +169,10 @@ fn uninstall_dry_run_reports_retained_state() {
 #[test]
 fn daemon_status_prints_one_json_object() {
     let world = World::new(&["46"]);
-    let bin = FakeBin::new(&world);
+    let path = fake_bin(&world);
     let output = world
         .command()
-        .env("PATH", bin.path_value())
+        .env("PATH", &path)
         .args(["daemon", "status"])
         .output()
         .unwrap();
@@ -210,7 +182,7 @@ fn daemon_status_prints_one_json_object() {
     assert_eq!(payload["active"], true);
     assert_eq!(payload["enabled"], true);
     assert!(payload["unit_version"].is_null() || payload["unit_version"].is_string());
-    assert_eq!(payload["binary_version"], "0.3.1");
+    assert_eq!(payload["binary_version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[test]

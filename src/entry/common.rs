@@ -42,11 +42,6 @@ impl CliError {
         self.code
     }
 
-    /// Message to print, if any.
-    pub fn message(&self) -> Option<&str> {
-        self.message.as_deref()
-    }
-
     /// Print the `breezed: …` line to stderr and terminate.
     pub fn exit(self) -> ! {
         if let Some(message) = self.message {
@@ -84,6 +79,15 @@ pub fn write_stdout_line(line: &str) -> Result<(), CliError> {
 
 fn write_line(out: &mut impl Write, line: &str) -> io::Result<()> {
     writeln!(out, "{line}")
+}
+
+/// Write one machine-readable JSON value to stdout.
+///
+/// # Errors
+///
+/// Propagates the [`write_stdout_line`] exit-code contract.
+pub fn print_json(value: &serde_json::Value) -> Result<(), CliError> {
+    write_stdout_line(&value.to_string())
 }
 
 /// Print a daemon step bullet to stderr.

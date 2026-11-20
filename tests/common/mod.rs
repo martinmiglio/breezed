@@ -185,6 +185,16 @@ pub fn json_lines(output: &[u8]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Captured stdout as UTF-8 (lossy).
+pub fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Captured stderr as UTF-8 (lossy).
+pub fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
 /// Event names from parsed JSON lines.
 pub fn event_names(records: &[serde_json::Value]) -> Vec<String> {
     records

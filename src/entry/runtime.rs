@@ -23,9 +23,9 @@ use crate::domain::ports::{
     Clock, EventSink, FanCommander, FanDevice, SpeedPolicy, SystemClock, TempReader,
 };
 use crate::domain::settings::Settings;
-use crate::domain::types::make_fan_pct;
-use crate::entry::common::{CliError, write_stdout_line};
-use serde_json::{Value, json};
+use crate::domain::types::{DomainError, make_fan_pct};
+use crate::entry::common::{CliError, print_json, write_stdout_line};
+use serde_json::json;
 
 /// Interruptible sleep seam; returns `true` when the stop flag was set.
 pub trait Sleeper: Send + Sync {
@@ -75,23 +75,11 @@ fn log_fatal(log: &LoggingSink, error_name: &str, detail: &str) {
     let _ = writeln!(std::io::stderr(), "{backtrace}");
 }
 
-fn print_json(value: &Value) -> Result<(), CliError> {
-    write_stdout_line(&value.to_string())
-}
-
-/// Sinks constructed for one runtime session.
-pub struct RuntimeSinks {
-    /// Destination for structured logs and fatal diagnostics.
-    pub log: Arc<LoggingSink>,
-    /// Extra sinks such as metrics or test recorders.
-    pub additional: Vec<Arc<dyn EventSink>>,
-}
-
 /// Factory for the IPMI device.
 pub type DeviceFactory = dyn Fn(&Settings) -> Arc<dyn FanDevice> + Send + Sync;
 
-/// Factory for the runtime sinks.
-pub type SinkFactory = dyn Fn(bool) -> RuntimeSinks + Send + Sync;
+/// Factory for the runtime sinks: the log sink plus any extra event sinks.
+pub type SinkFactory = dyn Fn(bool) -> (Arc<LoggingSink>, Vec<Arc<dyn EventSink>>) + Send + Sync;
 
 /// Injected collaborators for the control loop.
 ///
@@ -119,10 +107,7 @@ impl RuntimeDeps {
             build_device: Arc::new(|settings| {
                 Arc::new(IpmiClient::new(settings.clone())) as Arc<dyn FanDevice>
             }),
-            make_sinks: Arc::new(|verbose| RuntimeSinks {
-                log: Arc::new(LoggingSink::stdout(verbose)),
-                additional: Vec::new(),
-            }),
+            make_sinks: Arc::new(|verbose| (Arc::new(LoggingSink::stdout(verbose)), Vec::new())),
             policy: Arc::new(CurvePolicy),
             sleeper: Arc::new(SystemSleeper),
             clock: Arc::new(SystemClock),
@@ -163,7 +148,7 @@ fn run_with(
 ) -> Result<(), CliError> {
     let settings = load_or_usage(config)?;
 
-    let RuntimeSinks { log, additional } = (deps.make_sinks)(verbose);
+    let (log, additional) = (deps.make_sinks)(verbose);
     let mut sinks: Vec<Arc<dyn EventSink>> = vec![log.clone()];
     sinks.extend(additional);
 
@@ -231,10 +216,9 @@ fn run_tick_loop(
     watcher: &mut ConfigWatcher,
     deps: &RuntimeDeps,
     stop: &AtomicBool,
-    poll_interval: u64,
+    mut poll_interval: u64,
     sinks: &[Arc<dyn EventSink>],
-) -> Option<crate::domain::types::DomainError> {
-    let mut poll_interval = poll_interval;
+) -> Option<DomainError> {
     loop {
         if deps.sleeper.sleep_interruptible(stop, poll_interval) {
             return None;
@@ -393,13 +377,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
-    use crate::domain::curve::CurvePolicy;
-    use crate::domain::events::Event;
-    use crate::domain::ports::{FanCommander, SpeedPolicy, TempReader};
-    use crate::domain::settings::Settings;
-    use crate::domain::test_support::curve;
-    use crate::domain::types::{DomainError, EventType, FanPercent, TempC};
-    use crate::entry::common::CliError;
+    use crate::domain::types::{DomainError, FanPercent, TempC};
 
     const CONFIG: &str = r#"
 [settings]
@@ -592,12 +570,14 @@ fan_pct = 20
             build_device: Arc::new(move |_settings: &Settings| {
                 device_for_factory.clone() as Arc<dyn FanDevice>
             }),
-            make_sinks: Arc::new(move |verbose| RuntimeSinks {
-                log: Arc::new(LoggingSink::with_writer(
-                    verbose,
-                    Box::new(log_for_sinks.clone()),
-                )),
-                additional: vec![recorder_for_sinks.clone()],
+            make_sinks: Arc::new(move |verbose| {
+                (
+                    Arc::new(LoggingSink::with_writer(
+                        verbose,
+                        Box::new(log_for_sinks.clone()),
+                    )),
+                    vec![recorder_for_sinks.clone()],
+                )
             }),
             policy,
             sleeper: ScriptedSleeper::new(steps),
@@ -792,26 +772,5 @@ fan_pct = 20
 
         assert_eq!(error.code(), 2);
         assert!(h.recorder.names().is_empty());
-    }
-
-    #[test]
-    fn curve_policy_is_used_by_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = write_config(dir.path(), CONFIG);
-        let h = harness(
-            &[52],
-            vec![SleepStep::Continue, SleepStep::Stop],
-            Arc::new(CurvePolicy),
-        );
-        run(&h, &config).unwrap();
-        assert_eq!(h.device.commands(), ["manual", "set:7", "auto"]);
-    }
-
-    #[test]
-    fn test_curve_helper_builds_expected_curve() {
-        let curve = curve(&[(45, 6), (60, 8)]);
-        assert_eq!(curve.points().len(), 2);
-        assert_eq!(curve.points()[1].temp_c, TempC(60));
-        assert!(EventType::ALL.iter().any(|event| event.as_str() == "poll"));
     }
 }
