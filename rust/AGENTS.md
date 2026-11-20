@@ -41,7 +41,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
    `entry/daemon.rs`; add a variant there rather than a closure.
 3. Return `CliError::usage(...)` for config/usage failures (`2`) and
    `CliError::runtime(...)` for IPMI/runtime failures (`1`).
-4. Print machine output to stdout with `crate::json::Json`; errors go to stderr.
+4. Print machine output to stdout with `serde_json`; errors go to stderr.
 
 ### Add an adapter
 
@@ -58,4 +58,4 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 1. Add a variant to `domain::events::Event` and an `EventType` member.
 2. Emit it from `application::controller` (take `&Event` in `emit`).
 3. Handle or ignore it in `adapters::logs` and `adapters::metrics`; add the
-   field order to `renders_*` tests.
+   field names to the event-schema tests.

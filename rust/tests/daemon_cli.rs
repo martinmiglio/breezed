@@ -120,7 +120,8 @@ fn install_without_privileges_builds_the_fixed_sudo_argv() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(stdout(&output), "{\"event\": \"install_complete\"}\n");
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload, serde_json::json!({"event": "install_complete"}));
     let argv: Vec<String> = fs::read_to_string(&sudo_log)
         .unwrap()
         .lines()
@@ -148,10 +149,13 @@ fn uninstall_without_privileges_builds_the_fixed_sudo_argv() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        stdout(&output),
-        "{\"event\": \"uninstall_complete\", \
-         \"keeps\": [\"/etc/breezed.env\", \"/etc/breezed\"]}\n"
+        payload,
+        serde_json::json!({
+            "event": "uninstall_complete",
+            "keeps": ["/etc/breezed.env", "/etc/breezed"],
+        })
     );
     let argv: Vec<String> = fs::read_to_string(&sudo_log)
         .unwrap()

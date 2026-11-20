@@ -3,7 +3,7 @@
 //! Holds the validated [`Settings`] aggregate. The TOML source lives in
 //! `adapters::config`; this module never touches files or environment. The
 //! adapter maps raw TOML values into [`SettingsInput`], and every business rule
-//! (identity presence, ranges, ascending curve) is enforced here.
+//! (identity presence, ranges, port bounds, ascending curve) is enforced here.
 
 use std::fmt;
 
@@ -26,39 +26,13 @@ pub fn default_curve() -> Curve {
     .expect("the shipped default curve is valid")
 }
 
-/// A raw TOML integer, or a marker recording what type was found instead.
-///
-/// Keeping the Python type name here lets the domain produce the same
-/// "expected an integer, got bool" message the original pydantic validators do,
-/// while the adapter stays free of business rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RawInt {
-    value: Option<i64>,
-    got: &'static str,
-}
-
-impl RawInt {
-    /// A correctly typed integer.
-    pub const fn int(value: i64) -> Self {
-        Self {
-            value: Some(value),
-            got: "int",
-        }
-    }
-
-    /// A value of the wrong type, with its Python type name.
-    pub const fn wrong(got: &'static str) -> Self {
-        Self { value: None, got }
-    }
-}
-
 /// One raw `[[curve]]` row, before validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurveRowInput {
     /// Raw `temp_c` cell.
-    pub temp_c: RawInt,
+    pub temp_c: i64,
     /// Raw `fan_pct` cell.
-    pub fan_pct: RawInt,
+    pub fan_pct: i64,
 }
 
 /// Raw settings gathered by the config adapter.
@@ -73,13 +47,13 @@ pub struct SettingsInput {
     /// Top-level `[[curve]]`; `None` or an empty list selects the default.
     pub curve: Option<Vec<CurveRowInput>>,
     /// Poll cadence in seconds.
-    pub poll_interval_s: Option<RawInt>,
+    pub poll_interval_s: Option<i64>,
     /// Consecutive read failures before forcing AUTO.
-    pub read_failure_limit: Option<RawInt>,
+    pub read_failure_limit: Option<i64>,
     /// Downward-step hysteresis window in seconds.
-    pub step_down_hysteresis_s: Option<RawInt>,
+    pub step_down_hysteresis_s: Option<i64>,
     /// Loopback metrics port.
-    pub metrics_port: Option<RawInt>,
+    pub metrics_port: Option<i64>,
     /// ipmitool executable path; empty falls back to the default.
     pub ipmitool_path: Option<String>,
 }
@@ -105,16 +79,19 @@ pub struct Settings {
     poll_interval_s: i64,
     read_failure_limit: i64,
     step_down_hysteresis_s: i64,
-    metrics_port: Option<i64>,
+    metrics_port: Option<u16>,
     ipmitool_path: String,
 }
 
 impl Settings {
     /// Validate raw input into a frozen aggregate.
     ///
+    /// Identity problems are reported together; other field errors are
+    /// collected so one run names every invalid setting.
+    ///
     /// # Errors
     ///
-    /// Returns every collected validation message, joined by the adapter.
+    /// Returns the collected validation messages.
     pub fn from_input(input: SettingsInput) -> Result<Self, Vec<DomainError>> {
         let mut errors = Vec::new();
 
@@ -141,7 +118,7 @@ impl Settings {
             input.step_down_hysteresis_s,
             &mut errors,
         );
-        let metrics_port = parse_positive("metrics_port", input.metrics_port, &mut errors);
+        let metrics_port = parse_port(input.metrics_port, &mut errors);
 
         let curve = match input.curve {
             None => default_curve(),
@@ -211,7 +188,7 @@ impl Settings {
     }
 
     /// Loopback metrics port, if configured.
-    pub fn metrics_port(&self) -> Option<i64> {
+    pub fn metrics_port(&self) -> Option<u16> {
         self.metrics_port
     }
 
@@ -253,15 +230,8 @@ impl fmt::Debug for Settings {
     }
 }
 
-fn parse_positive(name: &str, raw: Option<RawInt>, errors: &mut Vec<DomainError>) -> Option<i64> {
-    let raw = raw?;
-    let Some(value) = raw.value else {
-        errors.push(DomainError::new(format!(
-            "{name}: expected an integer, got {}",
-            raw.got
-        )));
-        return None;
-    };
+fn parse_positive(name: &str, raw: Option<i64>, errors: &mut Vec<DomainError>) -> Option<i64> {
+    let value = raw?;
     match make_positive_int(name, value) {
         Ok(value) => Some(value),
         Err(error) => {
@@ -271,33 +241,36 @@ fn parse_positive(name: &str, raw: Option<RawInt>, errors: &mut Vec<DomainError>
     }
 }
 
+fn parse_port(raw: Option<i64>, errors: &mut Vec<DomainError>) -> Option<u16> {
+    let value = raw?;
+    if let Ok(port) = u16::try_from(value) {
+        if port > 0 {
+            return Some(port);
+        }
+    }
+    errors.push(DomainError::new(format!(
+        "metrics_port must be in 1..=65535, got {value}"
+    )));
+    None
+}
+
 fn parse_curve_rows(rows: &[CurveRowInput]) -> Result<Curve, DomainError> {
     let mut points = Vec::with_capacity(rows.len());
     for (index, row) in rows.iter().enumerate() {
-        let temp_c = require_int(index, "temp_c", row.temp_c)?;
-        let fan_pct = require_int(index, "fan_pct", row.fan_pct)?;
-        let fan_pct = make_fan_pct(fan_pct)
+        let fan_pct = make_fan_pct(row.fan_pct)
             .map_err(|error| DomainError::new(format!("curve[{index}].{error}")))?;
-        let Ok(temp_c) = i32::try_from(temp_c) else {
-            return Err(DomainError::new(format!(
-                "curve[{index}].temp_c: value out of range"
-            )));
-        };
+        let temp_c = i32::try_from(row.temp_c).map_err(|_| {
+            DomainError::new(format!(
+                "curve[{index}].temp_c: expected an i32, got {}",
+                row.temp_c
+            ))
+        })?;
         points.push(CurvePoint {
             temp_c: TempC(temp_c),
             fan_pct,
         });
     }
     Curve::new(points).map_err(|error| DomainError::new(format!("curve: {error}")))
-}
-
-fn require_int(index: usize, column: &str, raw: RawInt) -> Result<i64, DomainError> {
-    raw.value.ok_or_else(|| {
-        DomainError::new(format!(
-            "curve[{index}].{column}: expected an integer, got {}",
-            raw.got
-        ))
-    })
 }
 
 #[cfg(test)]
@@ -341,22 +314,35 @@ mod tests {
     }
 
     #[test]
-    fn bool_int_fields_are_named() {
+    fn nonpositive_int_fields_are_rejected() {
         let mut raw = input();
-        raw.poll_interval_s = Some(RawInt::wrong("bool"));
+        raw.metrics_port = Some(0);
         let errors = Settings::from_input(raw).unwrap_err();
         assert_eq!(
             errors[0].to_string(),
-            "poll_interval_s: expected an integer, got bool"
+            "metrics_port must be in 1..=65535, got 0"
         );
     }
 
     #[test]
-    fn nonpositive_int_fields_are_rejected() {
+    fn metrics_port_above_u16_is_rejected() {
         let mut raw = input();
-        raw.metrics_port = Some(RawInt::int(0));
+        raw.metrics_port = Some(70_000);
         let errors = Settings::from_input(raw).unwrap_err();
-        assert_eq!(errors[0].to_string(), "metrics_port must be > 0, got 0");
+        assert_eq!(
+            errors[0].to_string(),
+            "metrics_port must be in 1..=65535, got 70000"
+        );
+    }
+
+    #[test]
+    fn metrics_port_is_narrowed() {
+        let mut raw = input();
+        raw.metrics_port = Some(9762);
+        assert_eq!(
+            Settings::from_input(raw).unwrap().metrics_port(),
+            Some(9762)
+        );
     }
 
     #[test]
@@ -364,12 +350,12 @@ mod tests {
         let mut raw = input();
         raw.curve = Some(vec![
             CurveRowInput {
-                temp_c: RawInt::int(60),
-                fan_pct: RawInt::int(5),
+                temp_c: 60,
+                fan_pct: 5,
             },
             CurveRowInput {
-                temp_c: RawInt::int(50),
-                fan_pct: RawInt::int(6),
+                temp_c: 50,
+                fan_pct: 6,
             },
         ]);
         let errors = Settings::from_input(raw).unwrap_err();
@@ -384,8 +370,8 @@ mod tests {
     fn fan_pct_row_error_names_the_row() {
         let mut raw = input();
         raw.curve = Some(vec![CurveRowInput {
-            temp_c: RawInt::int(40),
-            fan_pct: RawInt::int(101),
+            temp_c: 40,
+            fan_pct: 101,
         }]);
         let errors = Settings::from_input(raw).unwrap_err();
         assert_eq!(
@@ -395,16 +381,27 @@ mod tests {
     }
 
     #[test]
+    fn temperature_beyond_i32_is_rejected() {
+        let mut raw = input();
+        raw.curve = Some(vec![CurveRowInput {
+            temp_c: i64::from(i32::MAX) + 1,
+            fan_pct: 50,
+        }]);
+        let errors = Settings::from_input(raw).unwrap_err();
+        assert!(errors[0].to_string().contains("curve[0].temp_c"));
+    }
+
+    #[test]
     fn descending_curve_is_rejected() {
         let mut raw = input();
         raw.curve = Some(vec![
             CurveRowInput {
-                temp_c: RawInt::int(60),
-                fan_pct: RawInt::int(5),
+                temp_c: 60,
+                fan_pct: 5,
             },
             CurveRowInput {
-                temp_c: RawInt::int(50),
-                fan_pct: RawInt::int(6),
+                temp_c: 50,
+                fan_pct: 6,
             },
         ]);
         let errors = Settings::from_input(raw).unwrap_err();

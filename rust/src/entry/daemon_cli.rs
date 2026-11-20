@@ -16,7 +16,7 @@ use crate::entry::daemon::{
     UserDb, apply, daemon_status, getuser, install_labels, remove, remove_labels, resolve_self,
     which,
 };
-use crate::json::Json;
+use serde_json::{Map, Value, json};
 
 const KEEP: [&str; 2] = ["/etc/breezed.env", "/etc/breezed"];
 
@@ -58,34 +58,27 @@ fn resolve_sudo() -> Result<PathBuf, CliError> {
     })
 }
 
-fn print_json(value: &Json) -> Result<(), CliError> {
-    write_stdout_line(&value.to_python_string())
+fn print_json(value: &Value) -> Result<(), CliError> {
+    write_stdout_line(&value.to_string())
 }
 
-fn planned_json(event: &str, steps: &[String], keeps: bool) -> Json {
-    let mut fields = vec![("event".to_owned(), Json::from(event))];
+fn planned_json(event: &str, steps: &[String], keeps: bool) -> Value {
+    let mut object = Map::with_capacity(3);
+    object.insert("event".to_owned(), json!(event));
     if keeps {
-        fields.push((
-            "keeps".to_owned(),
-            Json::Array(KEEP.iter().map(|path| Json::from(*path)).collect()),
-        ));
+        object.insert("keeps".to_owned(), json!(KEEP));
     }
-    fields.push((
-        "steps".to_owned(),
-        Json::Array(steps.iter().map(|step| Json::from(step.as_str())).collect()),
-    ));
-    Json::Object(fields)
+    object.insert("steps".to_owned(), json!(steps));
+    Value::Object(object)
 }
 
-fn complete_json(event: &str, keeps: bool) -> Json {
-    let mut fields = vec![("event".to_owned(), Json::from(event))];
+fn complete_json(event: &str, keeps: bool) -> Value {
+    let mut object = Map::with_capacity(2);
+    object.insert("event".to_owned(), json!(event));
     if keeps {
-        fields.push((
-            "keeps".to_owned(),
-            Json::Array(KEEP.iter().map(|path| Json::from(*path)).collect()),
-        ));
+        object.insert("keeps".to_owned(), json!(KEEP));
     }
-    Json::Object(fields)
+    Value::Object(object)
 }
 
 /// Build the fixed sudo argv used for the privileged install step.
@@ -207,16 +200,13 @@ fn validate_sudo_owner(owner: &str, sudo_user: Option<&str>) -> Result<(), CliEr
 /// Returns a runtime error (`1`) when the report cannot be produced.
 pub fn daemon_status_command() -> Result<(), CliError> {
     let report = daemon_status(&InstallerPaths::default(), &SystemRunner, &RealFileOps);
-    print_json(&Json::Object(vec![
-        ("unit_present".to_owned(), Json::from(report.unit_present)),
-        ("active".to_owned(), Json::from(report.active)),
-        ("enabled".to_owned(), Json::from(report.enabled)),
-        ("unit_version".to_owned(), Json::from(report.unit_version)),
-        (
-            "binary_version".to_owned(),
-            Json::from(report.binary_version),
-        ),
-    ]))
+    print_json(&json!({
+        "unit_present": report.unit_present,
+        "active": report.active,
+        "enabled": report.enabled,
+        "unit_version": report.unit_version,
+        "binary_version": report.binary_version,
+    }))
 }
 
 /// Stop and remove the service and binary via one sudo prompt.
