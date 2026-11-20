@@ -11,13 +11,13 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Verify the tag matches the Cargo version
         run: |
@@ -32,9 +32,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features -- -D warnings
-          cargo test --all-features
-          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
 
       - name: Build
         run: cargo build --release --locked --target x86_64-unknown-linux-gnu
@@ -55,8 +55,17 @@ jobs:
           sed "s|^DEFAULT_VERSION=.*|DEFAULT_VERSION=\"${version}\"|" install.sh > dist/install.sh
           chmod +x dist/install.sh
 
+      - name: Smoke-test the packaged archive
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="breezed-${version}-x86_64-unknown-linux-gnu"
+          tar -xzf "dist/${name}.tar.gz" -C dist
+          "./dist/${name}/breezed" --version
+          "./dist/install.sh" --help >/dev/null
+
       - name: Attest the release artifacts
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             ${{ github.workspace }}/dist/*.tar.gz

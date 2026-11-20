@@ -36,3 +36,8 @@ run *args:
 # Build the release binary.
 build:
     cargo build --release
+
+# Bump the version, commit, tag, and push. Pass the level explicitly, e.g.
+# `just release patch`. Run `cargo release <level>` first to preview.
+release level:
+    cargo release {{level}} --execute
