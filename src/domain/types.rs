@@ -31,12 +31,6 @@ impl FanPercent {
     }
 }
 
-impl From<FanPercent> for i32 {
-    fn from(value: FanPercent) -> Self {
-        value.0
-    }
-}
-
 /// Shared base for expected, user-facing failures.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{message}")]
@@ -50,11 +44,6 @@ impl DomainError {
         Self {
             message: message.into(),
         }
-    }
-
-    /// The error text, without any adapter-added prefix.
-    pub fn message(&self) -> &str {
-        &self.message
     }
 }
 
@@ -90,8 +79,7 @@ pub fn make_fan_pct(value: i64) -> Result<FanPercent, DomainError> {
             "fan_pct must be in 1..100, got {value}"
         )));
     }
-    let narrowed = i32::try_from(value)
-        .map_err(|_| DomainError::new(format!("fan_pct must be in 1..100, got {value}")))?;
+    let narrowed = i32::try_from(value).expect("1..=100 fits in i32");
     Ok(FanPercent(narrowed))
 }
 
@@ -229,12 +217,6 @@ impl Reason {
     }
 }
 
-impl fmt::Display for Reason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// IPMI write operation names used in error events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
@@ -254,12 +236,6 @@ impl Operation {
             Self::DisableAuto => "disable_auto",
             Self::SetManualPct => "set_manual_pct",
         }
-    }
-}
-
-impl fmt::Display for Operation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -288,18 +264,6 @@ impl fmt::Debug for SecretString {
 impl fmt::Display for SecretString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("**********")
-    }
-}
-
-impl From<&str> for SecretString {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<String> for SecretString {
-    fn from(value: String) -> Self {
-        Self::new(value)
     }
 }
 

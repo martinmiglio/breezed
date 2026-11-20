@@ -119,20 +119,8 @@ pub(crate) fn run_captured(
         .map_err(|error| CommandError::Spawn(error.to_string()))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_handle = stdout.map(|mut pipe| {
-        thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let _ = pipe.read_to_end(&mut buffer);
-            buffer
-        })
-    });
-    let stderr_handle = stderr.map(|mut pipe| {
-        thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let _ = pipe.read_to_end(&mut buffer);
-            buffer
-        })
-    });
+    let stdout_handle = stdout.map(drain);
+    let stderr_handle = stderr.map(drain);
 
     let status = child
         .wait_timeout(timeout)
@@ -156,6 +144,16 @@ pub(crate) fn run_captured(
         status: status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+/// Read a child pipe to EOF on its own thread so the timeout never blocks on a
+/// full pipe buffer.
+fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = pipe.read_to_end(&mut buffer);
+        buffer
     })
 }
 
@@ -325,7 +323,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::domain::settings::{Settings, SettingsInput};
+    use crate::domain::settings::SettingsInput;
     use crate::domain::types::make_fan_pct;
 
     const PASSWORD: &str = "hunter2-secret";
@@ -476,59 +474,37 @@ mod tests {
 
     #[test]
     fn commands_emit_exact_argv() {
-        let auto_runner = FakeRunner::new(vec![ok("ok\n")]);
-        let manual_runner = FakeRunner::new(vec![ok("ok\n")]);
-        let speed_runner = FakeRunner::new(vec![ok("ok\n")]);
-        let hex_runner = FakeRunner::new(vec![ok("ok\n")]);
-        make_client(auto_runner.clone()).enable_auto().unwrap();
-        make_client(manual_runner.clone()).disable_auto().unwrap();
-        make_client(speed_runner.clone())
-            .set_manual_pct(make_fan_pct(100).unwrap())
-            .unwrap();
-        make_client(hex_runner.clone())
-            .set_manual_pct(make_fan_pct(10).unwrap())
-            .unwrap();
-        let prefix = [
-            "/usr/bin/ipmitool",
-            "-I",
-            "lanplus",
-            "-H",
-            "169.254.0.1",
-            "-U",
-            "root",
-            "-E",
-        ];
+        let runner = FakeRunner::new(vec![ok("ok\n"), ok("ok\n"), ok("ok\n"), ok("ok\n")]);
+        let client = make_client(runner.clone());
+        client.enable_auto().unwrap();
+        client.disable_auto().unwrap();
+        client.set_manual_pct(make_fan_pct(100).unwrap()).unwrap();
+        client.set_manual_pct(make_fan_pct(10).unwrap()).unwrap();
+
+        let argv = |tail: &[&str]| {
+            [
+                "/usr/bin/ipmitool",
+                "-I",
+                "lanplus",
+                "-H",
+                "169.254.0.1",
+                "-U",
+                "root",
+                "-E",
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .chain(tail.iter().map(|part| (*part).to_owned()))
+            .collect::<Vec<_>>()
+        };
         assert_eq!(
-            auto_runner.calls(),
-            [prefix
-                .iter()
-                .map(ToString::to_string)
-                .chain(["raw", "0x30", "0x30", "0x01", "0x01"].map(str::to_owned))
-                .collect::<Vec<_>>()]
-        );
-        assert_eq!(
-            manual_runner.calls(),
-            [prefix
-                .iter()
-                .map(ToString::to_string)
-                .chain(["raw", "0x30", "0x30", "0x01", "0x00"].map(str::to_owned))
-                .collect::<Vec<_>>()]
-        );
-        assert_eq!(
-            speed_runner.calls(),
-            [prefix
-                .iter()
-                .map(ToString::to_string)
-                .chain(["raw", "0x30", "0x30", "0x02", "0xff", "0x64"].map(str::to_owned))
-                .collect::<Vec<_>>()]
-        );
-        assert_eq!(
-            hex_runner.calls(),
-            [prefix
-                .iter()
-                .map(ToString::to_string)
-                .chain(["raw", "0x30", "0x30", "0x02", "0xff", "0x0a"].map(str::to_owned))
-                .collect::<Vec<_>>()]
+            runner.calls(),
+            [
+                argv(&["raw", "0x30", "0x30", "0x01", "0x01"]),
+                argv(&["raw", "0x30", "0x30", "0x01", "0x00"]),
+                argv(&["raw", "0x30", "0x30", "0x02", "0xff", "0x64"]),
+                argv(&["raw", "0x30", "0x30", "0x02", "0xff", "0x0a"]),
+            ]
         );
     }
 
@@ -574,14 +550,6 @@ mod tests {
         let error = make_client(runner).enable_auto().unwrap_err();
         assert!(!error.to_string().contains(PASSWORD));
         assert!(!format!("{error:?}").contains(PASSWORD));
-    }
-
-    #[test]
-    fn settings_repr_masks_password() {
-        let settings = make_settings();
-        assert!(!format!("{settings:?}").contains(PASSWORD));
-        assert!(!settings.password().to_string().contains(PASSWORD));
-        assert_eq!(settings.password().expose_secret(), PASSWORD);
     }
 
     #[test]

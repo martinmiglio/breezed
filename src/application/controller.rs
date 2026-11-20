@@ -4,13 +4,14 @@
 //! injected event sinks. Hysteresis and AUTO fallback live here so they apply
 //! uniformly to every target the policy produces.
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use crate::domain::events::Event;
 use crate::domain::ports::{Clock, EventSink, FanDevice, SpeedPolicy};
 use crate::domain::settings::Settings;
 use crate::domain::types::{
-    DomainError, FanPercent, IpmiError, OperatingMode, Operation, Reason, make_fan_pct,
+    DomainError, FanPercent, IpmiError, OperatingMode, Operation, Reason, TempC, make_fan_pct,
 };
 
 /// Reads → decides → commands hardware → emits events, once per [`Controller::tick`].
@@ -97,12 +98,7 @@ impl Controller {
         true
     }
 
-    fn force_auto(
-        &mut self,
-        reason: Reason,
-        temp_c: Option<crate::domain::types::TempC>,
-        failures: Option<u32>,
-    ) {
+    fn force_auto(&mut self, reason: Reason, temp_c: Option<TempC>, failures: Option<u32>) {
         let result = self.device.enable_auto();
         if !self.handle_write(Operation::EnableAuto, reason, result) {
             return;
@@ -204,12 +200,12 @@ impl Controller {
                         self.enter_manual(pct, target);
                     } else if let Some(last_pct) = self.last_pct {
                         match target.cmp(&last_pct.get()) {
-                            std::cmp::Ordering::Greater => {
+                            Ordering::Greater => {
                                 self.apply_speed(pct, target, Reason::TempRise);
                                 self.pending_down = None;
                             }
-                            std::cmp::Ordering::Less => self.gate_downward(target, pct),
-                            std::cmp::Ordering::Equal => self.pending_down = None,
+                            Ordering::Less => self.gate_downward(target, pct),
+                            Ordering::Equal => self.pending_down = None,
                         }
                     } else {
                         // Invariant: manual mode always records a last percentage.
@@ -260,8 +256,8 @@ mod tests {
     use crate::domain::curve::{CurvePoint, CurvePolicy};
     use crate::domain::ports::{FanCommander, TempReader};
     use crate::domain::settings::Settings;
-    use crate::domain::test_support::{curve, point, settings, settings_with_curve};
-    use crate::domain::types::TempC;
+    use crate::domain::test_support::{curve, settings};
+    use crate::domain::types::{EventType, TempC};
 
     struct FakeClock {
         now: Mutex<f64>,
@@ -393,7 +389,7 @@ mod tests {
     }
 
     impl RecordingSink {
-        fn events(&self, kind: crate::domain::types::EventType) -> Vec<Event> {
+        fn events(&self, kind: EventType) -> Vec<Event> {
             self.records
                 .lock()
                 .unwrap()
@@ -469,23 +465,23 @@ mod tests {
     }
 
     fn mode_changes(sink: &RecordingSink) -> Vec<Event> {
-        sink.events(crate::domain::types::EventType::ModeChange)
+        sink.events(EventType::ModeChange)
     }
 
     fn speed_changes(sink: &RecordingSink) -> Vec<Event> {
-        sink.events(crate::domain::types::EventType::SpeedChange)
+        sink.events(EventType::SpeedChange)
     }
 
     fn ipmi_errors(sink: &RecordingSink) -> Vec<Event> {
-        sink.events(crate::domain::types::EventType::IpmiError)
+        sink.events(EventType::IpmiError)
     }
 
     fn hysteresis_waits(sink: &RecordingSink) -> Vec<Event> {
-        sink.events(crate::domain::types::EventType::HysteresisWait)
+        sink.events(EventType::HysteresisWait)
     }
 
     fn polls(sink: &RecordingSink) -> Vec<Event> {
-        sink.events(crate::domain::types::EventType::Poll)
+        sink.events(EventType::Poll)
     }
 
     #[test]
@@ -711,11 +707,11 @@ mod tests {
     fn replace_settings_success_uses_new_curve_next_tick() {
         let mut h = harness(
             temps(&[46]),
-            settings_with_curve(curve(&[(40, 5)])),
+            Settings::for_tests(curve(&[(40, 5)])),
             Arc::new(CurvePolicy),
             FakeClock::new(),
         );
-        let new_settings = settings_with_curve(curve(&[(45, 6), (47, 30)]));
+        let new_settings = Settings::for_tests(curve(&[(45, 6), (47, 30)]));
         h.controller.replace_settings(new_settings);
         h.controller.tick().unwrap();
         assert_eq!(h.ipmi.commands(), ["manual", "set:18"]);
@@ -912,7 +908,7 @@ mod tests {
 
     #[test]
     fn curve_target_drives_controller_to_manual() {
-        let settings = settings_with_curve(curve(&[(0, 42), (100, 42)]));
+        let settings = Settings::for_tests(curve(&[(0, 42), (100, 42)]));
         let mut h = harness(
             temps(&[30, 85]),
             settings,
@@ -1015,7 +1011,7 @@ mod tests {
         h.controller.tick().unwrap();
         assert!(h.ipmi.commands().is_empty());
         assert_eq!(
-            h.sink.events(crate::domain::types::EventType::ConfigError),
+            h.sink.events(EventType::ConfigError),
             [Event::ConfigError {
                 error: "fan_pct must be in 1..100, got 101".to_owned(),
             }]
@@ -1025,16 +1021,11 @@ mod tests {
     }
 
     #[test]
-    fn point_helper_builds_expected_values() {
-        assert_eq!(point(45, 6).temp_c, TempC(45));
-    }
-
-    #[test]
     fn all_recorded_events_have_a_closed_kind() {
         let mut h = default_harness(temps(&[40]));
         h.controller.tick().unwrap();
         for event in h.sink.all() {
-            assert!(crate::domain::types::EventType::ALL.contains(&event.kind()));
+            assert!(EventType::ALL.contains(&event.kind()));
         }
     }
 }

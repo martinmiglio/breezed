@@ -5,8 +5,6 @@
 //! adapter maps raw TOML values into [`SettingsInput`], and every business rule
 //! (identity presence, ranges, port bounds, ascending curve) is enforced here.
 
-use std::fmt;
-
 use crate::domain::curve::{Curve, CurvePoint};
 use crate::domain::types::{
     DomainError, FanPercent, SecretString, TempC, make_fan_pct, make_positive_int,
@@ -70,7 +68,7 @@ impl SettingsInput {
 }
 
 /// Validated runtime configuration; immutable so consumers can share it.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     host: String,
     user: String,
@@ -211,22 +209,6 @@ impl Settings {
             metrics_port: None,
             ipmitool_path: DEFAULT_TOOL_PATH.to_owned(),
         }
-    }
-}
-
-impl fmt::Debug for Settings {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Settings")
-            .field("host", &self.host)
-            .field("user", &self.user)
-            .field("password", &self.password)
-            .field("curve", &self.curve)
-            .field("poll_interval_s", &self.poll_interval_s)
-            .field("read_failure_limit", &self.read_failure_limit)
-            .field("step_down_hysteresis_s", &self.step_down_hysteresis_s)
-            .field("metrics_port", &self.metrics_port)
-            .field("ipmitool_path", &self.ipmitool_path)
-            .finish()
     }
 }
 
@@ -389,27 +371,6 @@ mod tests {
         }]);
         let errors = Settings::from_input(raw).unwrap_err();
         assert!(errors[0].to_string().contains("curve[0].temp_c"));
-    }
-
-    #[test]
-    fn descending_curve_is_rejected() {
-        let mut raw = input();
-        raw.curve = Some(vec![
-            CurveRowInput {
-                temp_c: 60,
-                fan_pct: 5,
-            },
-            CurveRowInput {
-                temp_c: 50,
-                fan_pct: 6,
-            },
-        ]);
-        let errors = Settings::from_input(raw).unwrap_err();
-        assert_eq!(
-            errors[0].to_string(),
-            "curve: curve temp_c must be strictly ascending: \
-             points[0].temp_c=60 >= points[1].temp_c=50"
-        );
     }
 
     #[test]

@@ -56,11 +56,6 @@ impl DaemonError {
             message: message.into(),
         }
     }
-
-    /// The message text.
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// Result of a single privileged step; `Done` means the step changed state.
@@ -233,20 +228,19 @@ pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
     fn run(&self, argv: &[String]) -> Result<String, DaemonError> {
+        let command = argv.join(" ");
         let output =
             run_captured(argv, None, Duration::from_secs(600)).map_err(|error| match error {
-                CommandError::Timeout => DaemonError::new(format!(
-                    "{} failed to run: timed out after 600s",
-                    argv.join(" ")
-                )),
+                CommandError::Timeout => {
+                    DaemonError::new(format!("{command} failed to run: timed out after 600s"))
+                }
                 CommandError::Spawn(message) => {
-                    DaemonError::new(format!("{} failed to run: {message}", argv.join(" ")))
+                    DaemonError::new(format!("{command} failed to run: {message}"))
                 }
             })?;
         if output.status != 0 {
             return Err(DaemonError::new(format!(
-                "{} failed (rc={}): {}",
-                argv.join(" "),
+                "{command} failed (rc={}): {}",
                 output.status,
                 first_line(&output.stderr)
             )));
@@ -657,10 +651,10 @@ impl Deployment {
 }
 
 fn same_file(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    fs::canonicalize(left)
+        .ok()
+        .zip(fs::canonicalize(right).ok())
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn ensure_runnable_binary(path: &Path) -> Result<(), DaemonError> {
@@ -732,32 +726,30 @@ pub fn euid() -> u32 {
     let Ok(status) = fs::read_to_string("/proc/self/status") else {
         return u32::MAX;
     };
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("Uid:") {
-            if let Some(value) = rest.split_whitespace().nth(2) {
-                if let Ok(value) = value.parse() {
-                    return value;
-                }
-            }
-        }
-    }
-    u32::MAX
+    status
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("Uid:")?
+                .split_whitespace()
+                .nth(2)?
+                .parse()
+                .ok()
+        })
+        .unwrap_or(u32::MAX)
 }
 
 /// Login name of the invoking user. Prefers `SUDO_USER` so a direct
 /// `sudo breezed daemon install` still assigns the config to the real caller.
 pub fn getuser() -> String {
-    if let Ok(value) = env::var("SUDO_USER") {
-        if !value.is_empty() {
-            return value;
-        }
+    let non_empty = |key: &str| env::var(key).ok().filter(|value| !value.is_empty());
+    if let Some(value) = non_empty("SUDO_USER") {
+        return value;
     }
-    for key in ["LOGNAME", "USER", "LNAME", "USERNAME"] {
-        if let Ok(value) = env::var(key) {
-            if !value.is_empty() {
-                return value;
-            }
-        }
+    if let Some(value) = ["LOGNAME", "USER", "LNAME", "USERNAME"]
+        .into_iter()
+        .find_map(non_empty)
+    {
+        return value;
     }
     let uid = euid();
     if let Ok(passwd) = fs::read_to_string("/etc/passwd") {

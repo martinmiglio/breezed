@@ -39,9 +39,8 @@ impl ConfigWatcher {
     /// Returns [`ConfigError`] when the file cannot be stat'ed.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref().to_path_buf();
-        let metadata = fs::metadata(&path).map_err(|error| cannot_read(&path, &error))?;
-        let modified = metadata
-            .modified()
+        let modified = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
             .map_err(|error| cannot_read(&path, &error))?;
         let mtime_ns = modified
             .duration_since(UNIX_EPOCH)

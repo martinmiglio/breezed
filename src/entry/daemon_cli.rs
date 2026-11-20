@@ -9,32 +9,16 @@ use std::process::Command;
 use std::sync::Arc;
 
 use crate::entry::common::{
-    CliError, print_done, print_note, print_skipped, print_step, write_stdout_line,
+    CliError, print_done, print_json, print_note, print_skipped, print_step,
 };
 use crate::entry::daemon::{
     CommandRunner, FileOps, InstallerPaths, RealFileOps, StepOutcome, SystemRunner, SystemUserDb,
-    UserDb, apply, daemon_status, getuser, install_labels, remove, remove_labels, resolve_self,
-    which,
+    UserDb, apply, daemon_status, euid, getuser, install_labels, remove, remove_labels,
+    resolve_self, which,
 };
 use serde_json::{Map, Value, json};
 
 const KEEP: [&str; 2] = ["/etc/breezed.env", "/etc/breezed"];
-
-/// Options for `daemon install`.
-#[derive(Debug, Clone, Default)]
-pub struct InstallOptions {
-    /// Print the privileged steps without escalating.
-    pub dry_run: bool,
-    /// Print one machine-readable result to stdout.
-    pub json: bool,
-}
-
-/// Options for `daemon apply` (hidden privileged step).
-#[derive(Debug, Clone)]
-pub struct ApplyOptions {
-    /// Invoking user/group for the config file.
-    pub owner: String,
-}
 
 fn print_step_plan(labels: &[String], note: &str) {
     print_note(note);
@@ -58,25 +42,14 @@ fn resolve_sudo() -> Result<PathBuf, CliError> {
     })
 }
 
-fn print_json(value: &Value) -> Result<(), CliError> {
-    write_stdout_line(&value.to_string())
-}
-
-fn planned_json(event: &str, steps: &[String], keeps: bool) -> Value {
-    let mut object = Map::with_capacity(3);
+fn result_json(event: &str, steps: Option<&[String]>, keeps: bool) -> Value {
+    let mut object = Map::with_capacity(2 + usize::from(steps.is_some()) + usize::from(keeps));
     object.insert("event".to_owned(), json!(event));
     if keeps {
         object.insert("keeps".to_owned(), json!(KEEP));
     }
-    object.insert("steps".to_owned(), json!(steps));
-    Value::Object(object)
-}
-
-fn complete_json(event: &str, keeps: bool) -> Value {
-    let mut object = Map::with_capacity(2);
-    object.insert("event".to_owned(), json!(event));
-    if keeps {
-        object.insert("keeps".to_owned(), json!(KEEP));
+    if let Some(steps) = steps {
+        object.insert("steps".to_owned(), json!(steps));
     }
     Value::Object(object)
 }
@@ -129,26 +102,26 @@ fn users() -> Arc<dyn UserDb> {
 /// # Errors
 ///
 /// Returns a runtime error (`1`) on staging, escalation, or step failure.
-pub fn daemon_install(options: &InstallOptions) -> Result<(), CliError> {
+pub fn daemon_install(dry_run: bool, json: bool) -> Result<(), CliError> {
     let paths = InstallerPaths::default();
     let labels = install_labels(&paths);
     let owner = getuser();
     let self_path = resolve_self();
 
-    if crate::entry::daemon::euid() == 0 {
+    if euid() == 0 {
         let results = apply(&self_path, &owner, &paths, runner(), fs_ops(), users())
             .map_err(|error| CliError::runtime(error.to_string()))?;
         print_results(&results);
-        if options.json {
-            print_json(&complete_json("install_complete", false))?;
+        if json {
+            print_json(&result_json("install_complete", None, false))?;
         }
         return Ok(());
     }
 
     print_step_plan(&labels, "The following privileged steps will run:");
-    if options.dry_run {
-        if options.json {
-            print_json(&planned_json("install_planned", &labels, false))?;
+    if dry_run {
+        if json {
+            print_json(&result_json("install_planned", Some(&labels), false))?;
         }
         return Ok(());
     }
@@ -156,8 +129,8 @@ pub fn daemon_install(options: &InstallOptions) -> Result<(), CliError> {
     let sudo = resolve_sudo()?;
     let argv = install_sudo_argv(&self_path, &owner);
     run_sudo(&sudo, &argv)?;
-    if options.json {
-        print_json(&complete_json("install_complete", false))?;
+    if json {
+        print_json(&result_json("install_complete", None, false))?;
     }
     Ok(())
 }
@@ -167,11 +140,11 @@ pub fn daemon_install(options: &InstallOptions) -> Result<(), CliError> {
 /// # Errors
 ///
 /// Returns a runtime error (`1`) when a privileged step fails.
-pub fn daemon_apply(options: &ApplyOptions) -> Result<(), CliError> {
-    validate_sudo_owner(&options.owner, env::var("SUDO_USER").ok().as_deref())?;
+pub fn daemon_apply(owner: &str) -> Result<(), CliError> {
+    validate_sudo_owner(owner, env::var("SUDO_USER").ok().as_deref())?;
     let results = apply(
         &resolve_self(),
-        &options.owner,
+        owner,
         &InstallerPaths::default(),
         runner(),
         fs_ops(),
@@ -219,12 +192,12 @@ pub fn daemon_uninstall(dry_run: bool, json: bool) -> Result<(), CliError> {
     let labels = remove_labels(&paths);
     let self_path = resolve_self();
 
-    if crate::entry::daemon::euid() == 0 {
+    if euid() == 0 {
         let results = remove(&paths, runner(), fs_ops(), users())
             .map_err(|error| CliError::runtime(error.to_string()))?;
         print_results(&results);
         if json {
-            print_json(&complete_json("uninstall_complete", true))?;
+            print_json(&result_json("uninstall_complete", None, true))?;
         }
         return Ok(());
     }
@@ -232,7 +205,7 @@ pub fn daemon_uninstall(dry_run: bool, json: bool) -> Result<(), CliError> {
     print_step_plan(&labels, "The following privileged steps will run:");
     if dry_run {
         if json {
-            print_json(&planned_json("uninstall_planned", &labels, true))?;
+            print_json(&result_json("uninstall_planned", Some(&labels), true))?;
         }
         return Ok(());
     }
@@ -241,7 +214,7 @@ pub fn daemon_uninstall(dry_run: bool, json: bool) -> Result<(), CliError> {
     let argv = uninstall_sudo_argv(&self_path);
     run_sudo(&sudo, &argv)?;
     if json {
-        print_json(&complete_json("uninstall_complete", true))?;
+        print_json(&result_json("uninstall_complete", None, true))?;
     }
     Ok(())
 }
