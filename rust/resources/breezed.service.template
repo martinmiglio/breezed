@@ -1,0 +1,59 @@
+# Installed by `breezed daemon install`; re-run it to refresh this file.
+[Unit]
+Description=breezed - curve-based iDRAC/IPMI fan controller
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/breezed run --config /etc/breezed/breezed.toml --metrics-port 9762
+EnvironmentFile=-/etc/breezed.env
+
+# Fan control is a safety service: always restart, even after an unexpected
+# clean exit, and give it a short stop window.
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=40
+
+# Measured steady RSS is ~5 MB including a transient ipmitool child.
+MemoryHigh=16M
+MemoryMax=32M
+TasksMax=16
+
+# Hardening — tiny network client that shells out to ipmitool. Rust is AOT, so
+# W^X enforcement is safe; the syscall baseline is systemd's service profile.
+User=breezed
+Group=breezed
+NoNewPrivileges=yes
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+InaccessiblePaths=/dev/shm
+
+[Install]
+WantedBy=multi-user.target

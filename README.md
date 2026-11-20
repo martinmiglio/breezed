@@ -136,6 +136,15 @@ forcing AUTO again after repeated sensor-read failures — but you chose the
 curve points, so choose them carefully. If anything looks wrong,
 `breezed auto` hands control back to the iDRAC instantly.
 
+## Rust rewrite
+
+A parity-focused Rust rewrite lives in [`rust/`](rust/README.md), with the
+behaviour contract and intentional differences documented in
+[`rust/PARITY.md`](rust/PARITY.md). It mirrors the same layered architecture and
+CLI/JSON/IPMI surface, and is fully testable against a fake `ipmitool` without
+hardware. The Python package remains the reference implementation; the Rust
+port has passed a live iDRAC and systemd-install round on the reference host.
+
 ## License
 
 [MIT](LICENSE)

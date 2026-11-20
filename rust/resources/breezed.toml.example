@@ -1,0 +1,22 @@
+[settings]
+host = "169.254.0.1"
+poll_interval_s = 10
+read_failure_limit = 3
+step_down_hysteresis_s = 30
+# metrics_port = 9762
+
+[[curve]]
+temp_c = 45
+fan_pct = 6
+
+[[curve]]
+temp_c = 60
+fan_pct = 8
+
+[[curve]]
+temp_c = 68
+fan_pct = 12
+
+[[curve]]
+temp_c = 74
+fan_pct = 18

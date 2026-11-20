@@ -1,0 +1,6 @@
+Fan Redundancy   | 39h | ok  |  7.1 | Fully Redundant
+FAN_1            | 30h | ok  |  7.2 | 4320 RPM
+FAN_2            | 31h | ok  |  7.2 | 4320 RPM
+FAN_3            | 32h | ok  |  7.2 | 4080 RPM
+FAN_4            | 33h | cr  |  7.2 | 0 RPM
+FAN_6            | 35h | ns  |  7.2 | No Reading
