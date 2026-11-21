@@ -1,6 +1,6 @@
 [package]
 name = "breezed"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.100"
 description = "Curve-based fan controller for Dell PowerEdge servers via iDRAC/IPMI"
