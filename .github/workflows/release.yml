@@ -17,6 +17,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy,rustfmt
+          targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Verify the tag matches the Cargo version
@@ -37,15 +38,15 @@ jobs:
           RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
 
       - name: Build
-        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Package
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          name="breezed-${version}-x86_64-unknown-linux-gnu"
+          name="breezed-${version}-x86_64-unknown-linux-musl"
           mkdir -p "dist/${name}"
-          cp "target/x86_64-unknown-linux-gnu/release/breezed" "dist/${name}/breezed"
+          cp "target/x86_64-unknown-linux-musl/release/breezed" "dist/${name}/breezed"
           cp resources/breezed.service.template "dist/${name}/breezed.service"
           cp resources/breezed.toml.example "dist/${name}/breezed.toml.example"
           cp README.md "dist/${name}/README.md"
@@ -60,18 +61,26 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          name="breezed-${version}-x86_64-unknown-linux-gnu"
+          name="breezed-${version}-x86_64-unknown-linux-musl"
           tar -xzf "dist/${name}.tar.gz" -C dist
           "./dist/${name}/breezed" --version
           "./dist/install.sh" --help >/dev/null
 
       - name: Attest the release artifacts
+        id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             ${{ github.workspace }}/dist/*.tar.gz
             ${{ github.workspace }}/dist/install.sh
             ${{ github.workspace }}/dist/SHA256SUMS
+
+      - name: Stage the attestation bundle
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          cp "${{ steps.attest.outputs.bundle-path }}" \
+            "dist/breezed-${version}-attestation.sigstore.json"
 
       - name: Publish GitHub release
         env:
@@ -81,6 +90,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/*.tar.gz \
             dist/install.sh \
+            dist/*.sigstore.json \
             dist/SHA256SUMS \
             --verify-tag \
             --generate-notes \

@@ -10,7 +10,7 @@ repository = "https://github.com/martinmiglio/breezed"
 readme = "README.md"
 
 [dependencies]
-chrono = "0.4.45"
+jiff = "1.0.1"
 clap = { version = "4.6.8", features = ["derive"] }
 regex = "1.13.2"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

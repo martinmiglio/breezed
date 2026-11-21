@@ -21,13 +21,14 @@ To pin a version, or to pass flags such as `--dry-run` through to
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install.sh \
-  | bash -s -- --version 0.3.1
+  | bash -s -- --version 0.4.0
 ```
 
-The script needs `curl`, `tar`, and `sha256sum`. Set
-`BREEZED_VERIFY_ATTESTATION=1` to also verify GitHub build provenance; that
-requires the `gh` CLI. Environment variables must be set on the `bash` side of
-the pipe:
+The script needs `curl`, `tar`, and `sha256sum`. Release binaries are static
+x86_64 Linux (musl), so they run on both glibc and musl systems. Set
+`BREEZED_VERIFY_ATTESTATION=1` to also verify build provenance; it uses `gh` or
+`cosign`, whichever is available. Environment variables must be set on the
+`bash` side of the pipe:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install.sh \
@@ -45,15 +46,28 @@ and enables and restarts the service. Existing `/etc/breezed/breezed.toml` and
 If you prefer to install from a downloaded tarball:
 
 ```sh
-VERSION=0.3.1
+VERSION=0.4.0
 BASE="https://github.com/martinmiglio/breezed/releases/download/v${VERSION}"
-curl -fsSLO "${BASE}/breezed-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+ARCHIVE="breezed-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+BUNDLE="breezed-${VERSION}-attestation.sigstore.json"
+
+curl -fsSLO "${BASE}/${ARCHIVE}"
+curl -fsSLO "${BASE}/${BUNDLE}"
 curl -fsSLO "${BASE}/SHA256SUMS"
-gh attestation verify "breezed-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-  --repo martinmiglio/breezed
+
+# Verify provenance with either tool.
+gh attestation verify "${ARCHIVE}" --repo martinmiglio/breezed
+# or, without gh:
+# cosign verify-blob-attestation \
+#   --bundle "${BUNDLE}" \
+#   --type slsa.dev/provenance/v1 \
+#   --certificate-identity-regexp '.*github.com/martinmiglio/breezed/.github/workflows/release.yml@refs/tags/v.*' \
+#   --certificate-oidc-issuer token.actions.githubusercontent.com \
+#   "${ARCHIVE}"
+
 sha256sum -c SHA256SUMS
-tar -xzf "breezed-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-sudo "./breezed-${VERSION}-x86_64-unknown-linux-gnu/breezed" daemon install
+tar -xzf "${ARCHIVE}"
+sudo "./breezed-${VERSION}-x86_64-unknown-linux-musl/breezed" daemon install
 ```
 
 ## Usage
@@ -147,8 +161,8 @@ just release patch         # commit, tag vX.Y.Z, and push
 ```
 
 The tag triggers the release workflow: it reruns the checks, builds the
-`x86_64-unknown-linux-gnu` archive, writes `SHA256SUMS`, attests the archive and
-installer, and publishes the GitHub release.
+`x86_64-unknown-linux-musl` archive, writes `SHA256SUMS`, publishes a Sigstore
+attestation bundle, and creates the GitHub release.
 
 ## License
 
