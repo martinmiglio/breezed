@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use chrono::{SecondsFormat, Utc};
+use jiff::Timestamp;
 use regex::Regex;
 use thiserror::Error;
 
@@ -366,7 +366,7 @@ pub fn render_unit(version: &str, timestamp: &str) -> String {
 }
 
 fn unit_timestamp() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+    Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Collect the daemon deployment report without requiring privileges.

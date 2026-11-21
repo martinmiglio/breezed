@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use chrono::{Local, Utc};
+use jiff::{Timestamp, ZonedDateTime};
 use serde_json::{Value, json};
 
 use crate::domain::events::Event;
@@ -21,11 +21,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Current UTC timestamp in the `2026-01-01T00:00:00Z` shape.
 fn utc_timestamp() -> String {
-    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 fn local_timestamp() -> String {
-    Local::now().format("%m/%d/%y %H:%M:%S").to_string()
+    ZonedDateTime::now()
+        .strftime("%m/%d/%y %H:%M:%S")
+        .to_string()
 }
 
 /// Serialize one event as a JSON line (without the trailing newline).
