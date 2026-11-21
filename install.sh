@@ -122,7 +122,7 @@ say "verified SHA-256: $actual"
 
 if [ "${BREEZED_VERIFY_ATTESTATION:-0}" = "1" ]; then
     verified=0
-    if command -v gh >/dev/null 2>&1; then
+    if command -v gh >/dev/null 2>&1 && gh attestation verify --help >/dev/null 2>&1; then
         say "verifying build provenance with gh"
         if gh attestation verify "$tmp/$asset" --repo "$REPO"; then
             verified=1
@@ -135,9 +135,9 @@ if [ "${BREEZED_VERIFY_ATTESTATION:-0}" = "1" ]; then
         curl -fsSL --retry 3 -o "$tmp/$bundle" "$base/$bundle"
         cosign verify-blob-attestation \
             --bundle "$tmp/$bundle" \
-            --type slsa.dev/provenance/v1 \
+            --type slsaprovenance1 \
             --certificate-identity-regexp ".*github.com/$REPO/.github/workflows/release.yml@refs/tags/v.*" \
-            --certificate-oidc-issuer token.actions.githubusercontent.com \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$tmp/$asset"
         verified=1
     fi

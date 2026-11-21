@@ -26,8 +26,8 @@ curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install
 
 The script needs `curl`, `tar`, and `sha256sum`. Release binaries are static
 x86_64 Linux (musl), so they run on both glibc and musl systems. Set
-`BREEZED_VERIFY_ATTESTATION=1` to also verify build provenance; it uses `gh` or
-`cosign`, whichever is available. Environment variables must be set on the
+`BREEZED_VERIFY_ATTESTATION=1` to also verify build provenance; it uses `gh`
+(with attestation support) or `cosign`, whichever is available. Environment variables must be set on the
 `bash` side of the pipe:
 
 ```sh
@@ -55,14 +55,14 @@ curl -fsSLO "${BASE}/${ARCHIVE}"
 curl -fsSLO "${BASE}/${BUNDLE}"
 curl -fsSLO "${BASE}/SHA256SUMS"
 
-# Verify provenance with either tool.
+# Verify provenance with either tool. `gh` must support `attestation`.
 gh attestation verify "${ARCHIVE}" --repo martinmiglio/breezed
 # or, without gh:
 # cosign verify-blob-attestation \
 #   --bundle "${BUNDLE}" \
-#   --type slsa.dev/provenance/v1 \
+#   --type slsaprovenance1 \
 #   --certificate-identity-regexp '.*github.com/martinmiglio/breezed/.github/workflows/release.yml@refs/tags/v.*' \
-#   --certificate-oidc-issuer token.actions.githubusercontent.com \
+#   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
 #   "${ARCHIVE}"
 
 sha256sum -c SHA256SUMS
