@@ -25,10 +25,11 @@ curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install
 ```
 
 The script needs `curl`, `tar`, and `sha256sum`. Release binaries are static
-x86_64 Linux (musl), so they run on both glibc and musl systems. Set
-`BREEZED_VERIFY_ATTESTATION=1` to also verify build provenance; it uses `gh`
-(with attestation support) or `cosign`, whichever is available. Environment variables must be set on the
-`bash` side of the pipe:
+x86_64 Linux (musl), so they run on both glibc and musl systems. Every install
+checks the SHA-256 against the published `SHA256SUMS`. Set
+`BREEZED_VERIFY_ATTESTATION=1` to also verify GitHub build provenance, which
+requires a recent `gh` with the `attestation` command. Environment variables
+must be set on the `bash` side of the pipe:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install.sh \
@@ -49,21 +50,12 @@ If you prefer to install from a downloaded tarball:
 VERSION=0.4.0
 BASE="https://github.com/martinmiglio/breezed/releases/download/v${VERSION}"
 ARCHIVE="breezed-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
-BUNDLE="breezed-${VERSION}-attestation.sigstore.json"
 
 curl -fsSLO "${BASE}/${ARCHIVE}"
-curl -fsSLO "${BASE}/${BUNDLE}"
 curl -fsSLO "${BASE}/SHA256SUMS"
 
-# Verify provenance with either tool. `gh` must support `attestation`.
+# Optional: verify build provenance (needs a recent gh CLI).
 gh attestation verify "${ARCHIVE}" --repo martinmiglio/breezed
-# or, without gh:
-# cosign verify-blob-attestation \
-#   --bundle "${BUNDLE}" \
-#   --type slsaprovenance1 \
-#   --certificate-identity-regexp '.*github.com/martinmiglio/breezed/.github/workflows/release.yml@refs/tags/v.*' \
-#   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-#   "${ARCHIVE}"
 
 sha256sum -c SHA256SUMS
 tar -xzf "${ARCHIVE}"
@@ -161,8 +153,8 @@ just release patch         # commit, tag vX.Y.Z, and push
 ```
 
 The tag triggers the release workflow: it reruns the checks, builds the
-`x86_64-unknown-linux-musl` archive, writes `SHA256SUMS`, publishes a Sigstore
-attestation bundle, and creates the GitHub release.
+`x86_64-unknown-linux-musl` archive, writes `SHA256SUMS`, attests the artifacts
+with GitHub artifact attestation, and creates the GitHub release.
 
 ## License
 

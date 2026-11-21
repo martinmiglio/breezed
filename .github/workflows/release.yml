@@ -67,20 +67,12 @@ jobs:
           "./dist/install.sh" --help >/dev/null
 
       - name: Attest the release artifacts
-        id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             ${{ github.workspace }}/dist/*.tar.gz
             ${{ github.workspace }}/dist/install.sh
             ${{ github.workspace }}/dist/SHA256SUMS
-
-      - name: Stage the attestation bundle
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          cp "${{ steps.attest.outputs.bundle-path }}" \
-            "dist/breezed-${version}-attestation.sigstore.json"
 
       - name: Publish GitHub release
         env:
@@ -90,7 +82,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/*.tar.gz \
             dist/install.sh \
-            dist/*.sigstore.json \
             dist/SHA256SUMS \
             --verify-tag \
             --generate-notes \

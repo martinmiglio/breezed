@@ -18,7 +18,7 @@
 # Environment:
 #   BREEZED_VERSION               Version without the leading `v` (default: latest)
 #   BREEZED_BASE_URL              Override the release download base (mirrors/testing)
-#   BREEZED_VERIFY_ATTESTATION=1  Verify build provenance with `gh` or `cosign`
+#   BREEZED_VERIFY_ATTESTATION=1  Also verify GitHub build provenance with `gh`
 #
 # Any other arguments are forwarded to `breezed daemon install`.
 
@@ -46,7 +46,7 @@ Options:
 Environment:
   BREEZED_VERSION               Same as --version
   BREEZED_BASE_URL              Override the release download base
-  BREEZED_VERIFY_ATTESTATION=1  Verify build provenance with gh or cosign (optional)
+  BREEZED_VERIFY_ATTESTATION=1  Also verify build provenance with gh (optional)
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install.sh | bash
@@ -105,7 +105,6 @@ if [ -z "$version" ]; then
 fi
 
 asset="breezed-$version-$TARGET.tar.gz"
-bundle="breezed-$version-attestation.sigstore.json"
 base="${BREEZED_BASE_URL:-https://github.com/$REPO/releases/download/v$version}"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/breezed-install.XXXXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -121,27 +120,12 @@ actual="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
 say "verified SHA-256: $actual"
 
 if [ "${BREEZED_VERIFY_ATTESTATION:-0}" = "1" ]; then
-    verified=0
-    if command -v gh >/dev/null 2>&1 && gh attestation verify --help >/dev/null 2>&1; then
-        say "verifying build provenance with gh"
-        if gh attestation verify "$tmp/$asset" --repo "$REPO"; then
-            verified=1
-        else
-            say "gh verification failed; trying cosign"
-        fi
-    fi
-    if [ "$verified" -eq 0 ] && command -v cosign >/dev/null 2>&1; then
-        say "verifying build provenance with cosign"
-        curl -fsSL --retry 3 -o "$tmp/$bundle" "$base/$bundle"
-        cosign verify-blob-attestation \
-            --bundle "$tmp/$bundle" \
-            --type slsaprovenance1 \
-            --certificate-identity-regexp ".*github.com/$REPO/.github/workflows/release.yml@refs/tags/v.*" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$tmp/$asset"
-        verified=1
-    fi
-    [ "$verified" -eq 1 ] || die "BREEZED_VERIFY_ATTESTATION=1 requires gh or cosign"
+    command -v gh >/dev/null 2>&1 \
+        || die "BREEZED_VERIFY_ATTESTATION=1 requires the gh CLI"
+    gh attestation verify --help >/dev/null 2>&1 \
+        || die "BREEZED_VERIFY_ATTESTATION=1 requires a gh release with attestation support"
+    say "verifying build provenance with gh"
+    gh attestation verify "$tmp/$asset" --repo "$REPO"
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
