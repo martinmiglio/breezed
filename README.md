@@ -21,7 +21,7 @@ To pin a version, or to pass flags such as `--dry-run` through to
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/martinmiglio/breezed/master/install.sh \
-  | bash -s -- --version 0.4.0
+  | bash -s -- --version 0.4.2
 ```
 
 The script needs `curl`, `tar`, and `sha256sum`. Release binaries are static
@@ -47,7 +47,7 @@ and enables and restarts the service. Existing `/etc/breezed/breezed.toml` and
 If you prefer to install from a downloaded tarball:
 
 ```sh
-VERSION=0.4.0
+VERSION=0.4.2
 BASE="https://github.com/martinmiglio/breezed/releases/download/v${VERSION}"
 ARCHIVE="breezed-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
