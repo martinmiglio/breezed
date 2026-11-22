@@ -20,6 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Build the pushed commit itself, not GitHub's ephemeral merge commit,
+          # so the archive name always matches the commit it was built from.
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: x86_64-unknown-linux-musl
@@ -30,10 +34,12 @@ jobs:
 
       - name: Package
         id: package
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "breezed") | .version')
-          name="breezed-${version}-${GITHUB_SHA:0:7}-x86_64-unknown-linux-musl"
+          name="breezed-${version}-${HEAD_SHA:0:7}-x86_64-unknown-linux-musl"
           mkdir -p "dist/${name}"
           cp "target/x86_64-unknown-linux-musl/release/breezed" "dist/${name}/breezed"
           cp resources/breezed.service.template "dist/${name}/breezed.service"
@@ -47,7 +53,7 @@ jobs:
           {
             echo "### PR build archive"
             echo ""
-            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Commit: \`${HEAD_SHA}\`"
             echo "- Archive: \`${name}.tar.gz\`"
             echo ""
             echo "Download it from the **Artifacts** section of this workflow run."
