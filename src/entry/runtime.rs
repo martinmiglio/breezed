@@ -100,13 +100,33 @@ pub struct RuntimeDeps {
     pub install_signals: bool,
 }
 
+/// Build the configured fan device implementation.
+///
+/// `BREEZED_NATIVE_IPMI=1` selects the experimental native RMCP+ adapter; the
+/// default remains the `ipmitool` subprocess path.
+fn build_device(settings: &Settings) -> Arc<dyn FanDevice> {
+    #[cfg(feature = "native-ipmi")]
+    {
+        if native_ipmi_requested() {
+            return Arc::new(crate::adapters::ipmi_native::NativeIpmiClient::new(
+                settings.clone(),
+            ));
+        }
+    }
+
+    Arc::new(IpmiClient::new(settings.clone()))
+}
+
+#[cfg(feature = "native-ipmi")]
+fn native_ipmi_requested() -> bool {
+    std::env::var("BREEZED_NATIVE_IPMI").is_ok_and(|value| value == "1")
+}
+
 impl RuntimeDeps {
     /// Wire the production adapters.
     pub fn production() -> Self {
         Self {
-            build_device: Arc::new(|settings| {
-                Arc::new(IpmiClient::new(settings.clone())) as Arc<dyn FanDevice>
-            }),
+            build_device: Arc::new(build_device),
             make_sinks: Arc::new(|verbose| (Arc::new(LoggingSink::stdout(verbose)), Vec::new())),
             policy: Arc::new(CurvePolicy),
             sleeper: Arc::new(SystemSleeper),

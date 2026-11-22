@@ -53,6 +53,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 3. Wire it in `entry/`. `daemon install` copies the running binary; the
    privileged `apply` validates the config owner against `SUDO_USER` and
    resolves its primary group.
+4. A second fan device adapter exists behind the optional `native-ipmi`
+   feature (`adapters::ipmi_native`, selected by `BREEZED_NATIVE_IPMI=1`).
+   Keep both adapters implementing the same ports and behaviourally aligned.
 
 ### Add an event
 

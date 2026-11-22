@@ -103,6 +103,29 @@ reloads when its mtime changes; an invalid reload keeps the last good settings.
 Curve points must be strictly ascending in `temp_c`, `fan_pct` must be `1..=100`,
 and `metrics_port` must be `1..=65535`.
 
+### Experimental native IPMI backend
+
+Instead of spawning `ipmitool` for every poll, an optional adapter can speak
+RMCP+ directly through [`ipmi-rs`](https://github.com/datdenkikniet/ipmi-rs):
+
+```sh
+cargo build --release --features native-ipmi
+BREEZED_NATIVE_IPMI=1 ./target/release/breezed run --config /etc/breezed/breezed.toml
+```
+
+- The switch applies to `run` only; `set`, `auto`, and `status` still use
+  `ipmitool`.
+- Release archives and `install.sh` are built without the feature, so the
+  variable has no effect on released binaries. Build from source to try it.
+- The adapter opens one session, loads the SDR repository once at connect, and
+  reuses the session for every poll. The iDRAC account still needs the
+  `Administrator` role for Dell's OEM fan commands.
+- Known limitations: the SDR load happens at connect and can take a few
+  seconds; a lost packet during the load forces a reconnect and a full reload;
+  there is no release packaging or Prometheus metric for the native path yet.
+  The `ipmi-rs` dependency is pinned to a fork revision until the session and
+  privilege fixes are released upstream.
+
 ## Service
 
 ```sh
