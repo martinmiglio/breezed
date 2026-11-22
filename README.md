@@ -156,6 +156,10 @@ The tag triggers the release workflow: it reruns the checks, builds the
 `x86_64-unknown-linux-musl` archive, writes `SHA256SUMS`, attests the artifacts
 with GitHub artifact attestation, and creates the GitHub release.
 
+Every commit pushed to a non-draft pull request is also packaged the same way.
+The archive is named with the commit's short SHA and uploaded to the workflow
+run as an artifact, so a change can be installed and tried before a release.
+
 ## License
 
 [MIT](LICENSE)
