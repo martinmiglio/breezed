@@ -1,0 +1,70 @@
+name: Build
+
+# Package a testable release-shaped archive for every commit pushed to a
+# pull request that is ready for review (drafts are skipped). The archive is
+# attached to the workflow run as a build artifact.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "breezed") | .version')
+          name="breezed-${version}-${GITHUB_SHA:0:7}-x86_64-unknown-linux-musl"
+          mkdir -p "dist/${name}"
+          cp "target/x86_64-unknown-linux-musl/release/breezed" "dist/${name}/breezed"
+          cp resources/breezed.service.template "dist/${name}/breezed.service"
+          cp resources/breezed.toml.example "dist/${name}/breezed.toml.example"
+          cp README.md "dist/${name}/README.md"
+          cp ARCHITECTURE.md "dist/${name}/ARCHITECTURE.md"
+          cp LICENSE "dist/${name}/LICENSE"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS)
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### PR build archive"
+            echo ""
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Archive: \`${name}.tar.gz\`"
+            echo ""
+            echo "Download it from the **Artifacts** section of this workflow run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke-test the packaged archive
+        run: |
+          set -euo pipefail
+          name="${{ steps.package.outputs.name }}"
+          tar -xzf "dist/${name}.tar.gz" -C dist
+          "./dist/${name}/breezed" --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
