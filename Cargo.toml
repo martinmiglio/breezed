@@ -9,7 +9,13 @@ publish = false
 repository = "https://github.com/martinmiglio/breezed"
 readme = "README.md"
 
+[features]
+# Experimental: talk RMCP+ directly instead of spawning ipmitool.
+native-ipmi = ["dep:ipmi-rs"]
+
 [dependencies]
+# Pinned to the fork until the session-close and privilege changes are released upstream.
+ipmi-rs = { git = "https://github.com/martinmiglio/ipmi-rs", rev = "6a6ad281e5ed4cb1dda6345fb60823801fd5be5c", version = "0.6.0", default-features = false, optional = true }
 jiff = "1.0.1"
 clap = { version = "4.6.8", features = ["derive"] }
 regex = "1.13.2"

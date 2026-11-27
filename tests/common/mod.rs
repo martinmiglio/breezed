@@ -128,7 +128,8 @@ impl World {
             .env("FAKE_IPMI_DIR", self.dir.path())
             .env_remove("IDRAC_HOST")
             .env_remove("IDRAC_USER")
-            .env_remove("IDRAC_PASSWORD");
+            .env_remove("IDRAC_PASSWORD")
+            .env_remove("BREEZED_NATIVE_IPMI");
         command
     }
 

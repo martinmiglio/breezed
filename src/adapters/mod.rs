@@ -3,6 +3,8 @@
 
 pub mod config;
 pub mod ipmi;
+#[cfg(feature = "native-ipmi")]
+pub mod ipmi_native;
 pub mod logs;
 pub mod metrics;
 pub mod watcher;
